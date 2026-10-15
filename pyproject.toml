@@ -1,0 +1,25 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=3.0"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "aegislink"
+version = "0.1.0"
+description = "A simulated UAV-to-ground video and telemetry link under electronic warfare"
+readme = "README.md"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[tool.scikit-build]
+wheel.packages = ["python/aegislink"]
+cmake.build-type = "Release"
+# Inside the project (not the system temp folder), so rebuilds are incremental.
+build-dir = "build/{wheel_tag}"
+minimum-version = "build-system.requires"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
