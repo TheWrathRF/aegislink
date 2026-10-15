@@ -1,6 +1,5 @@
 # Python
-.venv/
-.venv-*/
+.venv*/
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -8,8 +7,9 @@ __pycache__/
 
 # Build output
 build/
-_skbuild/
+out/
 dist/
+CMakeUserPresets.json
 *.pyd
 *.so
 *.dll
@@ -26,6 +26,7 @@ logs/
 recordings/
 
 # Editors and OS
+.vs/
 .vscode/
 .idea/
 Thumbs.db
