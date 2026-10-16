@@ -15,8 +15,9 @@ ctest --preset msvc
 ```
 On Linux the `gcc-asan` preset builds the same tests with AddressSanitizer and UBSan.
 
-Python module and tests (builds `aegislink._core` into `build/<wheel tag>`, about 15 s the first
-time; rerun the install after any C++ change):
+Python module, proxy and tests (builds `aegislink._core` and `ew_chaos_proxy` into
+`build/<wheel tag>` and installs the proxy next to the Python scripts; rerun the install after any
+C++ change, since the proxy tests run the installed binary):
 ```
 python -m pip install -e ".[test]"
 python -m pytest
@@ -27,6 +28,15 @@ Loopback check (a 50 KB message over loopback UDP in 42 fragments):
 python -m aegislink.tools.loopback_check --size 50000
 ```
 
+Chaos proxy by hand: start it in one terminal, measure a link from another (the meter sets the
+link through the control port first):
+```
+ew_chaos_proxy --link 5600:5601 --control 5700
+python -m aegislink.tools.link_meter --loss-pct 30 --burst 4
+python -m aegislink.tools.link_meter --kbps 50 --size 1230 --rate 10 --packets 60
+python -m aegislink.tools.link_meter --delay-ms 30 --jitter-ms 20 --packets 2000 --rate 500
+```
+
 ## What the tests cover
 - `cpp/tests/test_crc32`: catalogued check values, chaining.
 - `cpp/tests/test_protocol`: byte layout, round trip, every rejection path, a flipped bit
@@ -35,8 +45,22 @@ python -m aegislink.tools.loopback_check --size 50000
   timeout at exactly 200 ms, interleaved messages, inconsistent fragments, eviction.
 - `cpp/tests/test_fuzz`: 200,000 random datagrams (none accepted); 3000 messages with random bit
   flips, truncation and drops (no corrupt message is ever delivered). About 4 s in a Debug build.
+- `cpp/tests/test_udp_socket`: send and receive on loopback, select timeout, a send to a closed
+  port does not break the next read.
+- `cpp/tests/test_gilbert_elliott`: loss rate and mean burst length within 2 % over 1,000,000
+  draws for five settings, the L = 1 limit, rejected settings, reset to the good state.
+- `cpp/tests/test_token_bucket`: exact release times, a backlog never above depth + rate x T,
+  refill capped at the depth.
+- `cpp/tests/test_link`: delay and jitter bounds, loss counting, queueing and drop-tail, blackout
+  timing and its precedence, rejected settings, a settings change keeps the rate backlog, seeds.
+- `cpp/tests/test_control`: replies, every key, errors leave the link unchanged, the stats text.
 - `tests/test_bindings.py`: the module against a `struct` + `zlib` reference of the format.
 - `tests/test_loopback.py`: real UDP sockets on 127.0.0.1.
+- `tests/test_proxy.py`: starts the installed `ew_chaos_proxy` and measures it with `link_meter`:
+  datagrams pass unchanged and in order; control replies, errors and stats (4 per second);
+  measured loss and mean burst length within 10 % of the settings (20,000 packets); throughput
+  never above the limit at 50 and 500 kbps (and above 90 % of it); delay and jitter; blackout.
+  About 25 s.
 
 ## CI
 `.github/workflows/ci.yml` runs on every push: Windows (`msvc` preset) and Ubuntu (`gcc-asan`
