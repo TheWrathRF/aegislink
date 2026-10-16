@@ -26,6 +26,7 @@ if(AEGIS_SANITIZE AND NOT MSVC)
 endif()
 
 add_subdirectory(cpp/core)
+add_subdirectory(cpp/proxy)
 
 if(SKBUILD)
   # Found first so pybind11 uses CMake's FindPython instead of its deprecated fallback.
