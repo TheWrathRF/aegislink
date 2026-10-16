@@ -205,8 +205,8 @@ int main(int argc, char** argv) {
         return 2;
     }
 #ifdef _WIN32
-    // Windows wakes sleeping threads on a 15.6 ms timer by default, far too coarse for delay
-    // and jitter of a few milliseconds.
+    // Windows wakes sleeping threads on a coarse timer by default: without this, select()
+    // returned up to 8.5 ms late (1 ms with it), too coarse for delays of a few milliseconds.
     timeBeginPeriod(1);
 #endif
     try {
