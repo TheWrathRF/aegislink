@@ -116,8 +116,9 @@ def test_stats_arrive_four_times_a_second(clean_proxy):
 @pytest.mark.parametrize("loss_pct, burst", [(30, 4), (10, 1.5)])
 def test_measured_loss_and_burst_length_match_the_settings(clean_proxy, loss_pct, burst):
     clean_proxy.control.configure(1, loss_pct=loss_pct, burst=burst)
+    # Linux caps socket buffers at a few hundred KB, so a faster stream could lose packets in the OS.
     m = link_meter.measure(clean_proxy.listen_port, clean_proxy.receiver,
-                           packets=20_000, size=200, rate_pps=10_000)
+                           packets=20_000, size=200, rate_pps=5_000)
     assert m.corrupt == 0
     assert abs(m.loss - loss_pct / 100) <= 0.1 * loss_pct / 100
     assert abs(m.mean_burst - burst) <= 0.1 * burst
