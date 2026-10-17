@@ -15,6 +15,12 @@ Work in progress. So far it has:
   per-link counters 4 times per second.
 - **`link_meter`**, a tool that sends a numbered stream through a proxy link and measures the
   loss, burst length, throughput and delay that come out.
+- **A synthetic UAV world** with exact ground truth: a procedural 1 km x 1 km map with roads,
+  trees and a bridge, traffic that follows, stops and disappears under trees, and a multirotor
+  that follows one vehicle with a downward-looking camera. A simulated detector (misses, box
+  noise, false alarms) feeds an IoU tracker that compensates for the camera's own motion. Over
+  five 60 s runs the tracks covered 94.7-95.0 % of the vehicles in clear view with no id
+  switches.
 
 ## Build and test
 
@@ -33,6 +39,12 @@ it in one terminal and measure a link with 30 % loss in bursts of 4 packets from
 ```
 ew_chaos_proxy --link 5600:5601 --control 5700
 python -m aegislink.tools.link_meter --loss-pct 30 --burst 4
+```
+
+To watch the UAV simulation with its tracked boxes (it also writes the ground truth to `logs/`):
+
+```
+python -m aegislink.uav.main
 ```
 
 C++ unit tests: `cmake --preset msvc` (Windows) or `cmake --preset gcc-asan` (Linux), then

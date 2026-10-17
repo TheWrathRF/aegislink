@@ -37,6 +37,13 @@ python -m aegislink.tools.link_meter --kbps 50 --size 1230 --rate 10 --packets 6
 python -m aegislink.tools.link_meter --delay-ms 30 --jitter-ms 20 --packets 2000 --rate 500
 ```
 
+UAV simulation with an OpenCV preview (q or Esc quits), or headless; both write the ground
+truth to `logs/` and print how well the tracks matched the true vehicles:
+```
+python -m aegislink.uav.main
+python -m aegislink.uav.main --no-preview --seconds 60 --seed 2
+```
+
 ## What the tests cover
 - `cpp/tests/test_crc32`: catalogued check values, chaining.
 - `cpp/tests/test_protocol`: byte layout, round trip, every rejection path, a flipped bit
@@ -61,6 +68,23 @@ python -m aegislink.tools.link_meter --delay-ms 30 --jitter-ms 20 --packets 2000
   measured loss and mean burst length within 10 % of the settings (20,000 packets); throughput
   never above the limit at 50 and 500 kbps (and above 90 % of it); delay and jitter; blackout.
   About 25 s.
+- `tests/test_camera.py`: latitude/longitude round trip, focal length and footprint, pixel ->
+  ground -> pixel at five headings, image up = heading, the affine matrices against the point
+  functions, the camera-motion matrix.
+- `tests/test_sim_world.py`: a seed gives the same world and motion; roads inside the map;
+  100 s of traffic stays in lane (0.3 m) with bumper gaps >= 1 m, and vehicles stop and go; a
+  rendered vehicle sits at the pixel the camera predicts, inside its truth box; trees hide a
+  vehicle and lower `visible`; boxes are clipped at the image edge; the flight keeps the followed
+  vehicle in view over 95 % of 60 s, rolls under 30 degrees, and its telemetry matches its pose.
+- `tests/test_tracker.py`: IoU; detection rate, edge noise (mean and sigma within 5 %) and false
+  boxes over 10,000-20,000 frames; hidden and cut-off vehicles never detected; ids kept through
+  gaps of 10-12 frames, through a crossing, and while the camera stops turning during a 12-frame
+  gap (the last fails without camera-motion compensation); one-frame false detections never
+  become tracks; a track ends after 30 missed frames.
+- `tests/test_uav_run.py`: a 40 s run writes a log with the expected header and fields, whose
+  pose, positions and boxes agree within 1 px; tracks cover over 90 % of the vehicles in clear
+  view with at most 1 id switch and under 1 % false track frames; the score counts switches,
+  reacquisitions and false tracks; a seed repeats a run exactly. About 10 s.
 
 ## CI
 `.github/workflows/ci.yml` runs on every push: Windows (`msvc` preset) and Ubuntu (`gcc-asan`

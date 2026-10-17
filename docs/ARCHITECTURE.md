@@ -11,8 +11,10 @@ used from Python through pybind11 (`aegislink._core`).
 - `cpp/bindings/aegis_core.cpp`: the pybind11 module `aegislink._core`.
 - `cpp/tests/`: C++ unit tests, one executable per module, with a tiny runner (`test_runner.hpp`).
 - `python/aegislink/`: the Python package. `common/proxy_control.py` talks to the proxy's
-  control port; `tools/loopback_check.py` sends messages over loopback UDP and checks that they
-  arrive intact; `tools/link_meter.py` measures a proxy link.
+  control port; `common/geo.py` converts local metres to latitude/longitude;
+  `tools/loopback_check.py` sends messages over loopback UDP and checks that they arrive intact;
+  `tools/link_meter.py` measures a proxy link; `uav/` is the UAV side (synthetic world, camera,
+  flight, detector, tracker).
 - `tests/`: pytest.
 - One `CMakeLists.txt` builds the C++ tests and the proxy (plain CMake), and the Python module
   plus the proxy when scikit-build-core runs it (`SKBUILD` is set, the tests are skipped, and the
@@ -113,3 +115,77 @@ becomes `ValueError`.
   both ends); throughput from the received bytes between the first and the last arrival, the
   first datagram excluded because it only starts the clock. The command line sets the link
   through the control port first, then prints the measurement next to the settings.
+
+## Synthetic world (`uav/sim_world.py`)
+Everything uses a local frame in metres: x = east, y = north, origin at the map centre
+(`common/geo.py` turns it into latitude/longitude with a flat-earth approximation around
+`origin_latlon`, accurate to millimetres over a few kilometres).
+
+- **Ground**: one BGR raster (default 1000 m x 1000 m at 0.25 m per pixel, 4000 x 4000 px),
+  drawn once from a seed: smooth noise blends grass, dry grass and soil, and noise at 8 m, 2 m and
+  0.7 m gives texture that is fixed to the ground. Raster column = (east + size/2) / res, row =
+  (size/2 - north) / res.
+- **Roads**: closed loops (a circle with random 2nd-4th harmonic wobble), 7 m wide, two lanes,
+  right-hand traffic. Loops may cross; there are no junctions, so vehicles on crossing roads drive
+  through each other.
+- **Occluders**: two tree clumps (radius 5.5-7 m) over every road and one bridge (12 m x 30 m) over
+  the first, plus scattered trees off the roads. They are drawn after the vehicles, so they hide
+  them. A `cover` raster marks the covered ground; `visible_fraction` samples 5 x 3 points over a
+  vehicle's footprint against it.
+- **Vehicles** (default 16 per loop, 15 % trucks of 8 x 2.5 m, cars 4.5 x 1.9 m): each has a
+  position `s` along its loop and a direction. Per step (1/30 s): a vehicle aims for its desired
+  speed (7-13 m/s), or for 0 when it is due to stop (every 15-45 s, for 2-6 s), but never faster
+  than `(gap - 3 m) / 1.2 s` to the vehicle ahead in its lane; it accelerates at up to 2 m/s^2
+  and brakes at up to 6 m/s^2, and its move is cut so the bumper gap never drops below 1 m.
+- **Rendering** (`render(camera, pose)`): one `warpAffine` of the ground raster through the
+  camera's pixel -> ground -> raster matrix, then the vehicles (body and roof as anti-aliased
+  polygons), then trees and bridges near the view. It returns the image and a `Truth` per vehicle
+  near the view: its axis-aligned pixel box clipped to the image, the share of the box inside the
+  image (`in_frame`) and `visible`. About 4 ms per 1280 x 720 frame.
+
+## Camera and flight (`uav/camera.py`, `uav/telemetry.py`)
+- `NadirCamera` (1280 x 720, 60 degree horizontal field of view) looks straight down from a
+  gimbal, so over flat ground pixel -> ground is one affine map: scale `alt / focal_px` metres per
+  pixel, rotation by the heading (image up = heading), shift by the UAV position. Pixel centres sit
+  on integer coordinates, as in OpenCV. `motion_matrix(old, new)` is the affine map from a ground
+  point's pixel in one frame to its pixel in the next: the image motion caused by the camera.
+- `Flight` is a multirotor that follows one vehicle: wanted velocity = the vehicle's velocity +
+  0.4/s x the position error (at most 18 m/s), reached with a 1 s time constant and at most
+  3 m/s^2. The nose turns towards the direction of flight at up to 25 deg/s (only above 1.5 m/s).
+  Altitude is 150 m +- 10 m over 90 s. Pitch and roll follow from the accelerations (forward
+  acceleration and speed x yaw rate, against gravity).
+- `Telemetry`: time, latitude, longitude, altitude, ground speed, heading, pitch, roll.
+
+## Detector and tracker (`uav/detector.py`, `uav/tracker.py`)
+- `SimulatedDetector` turns truths into detections. A vehicle with less than half its box in the
+  image, or less than 40 % visible, is never found; one at least 90 % visible is found with
+  probability 0.95, falling linearly in between. Each box edge gets Gaussian noise with sigma
+  1 px + 4 % of the box size. False boxes appear at 0.05 per frame with scores below 0.6.
+- `IouTracker`, per frame:
+  1. each track's box moves with the camera (`motion_matrix`, scale included), then by the
+     vehicle's own image velocity, so a coasting track stays on a parked vehicle while the camera
+     turns, and does not overshoot when the camera stops turning;
+  2. track/detection pairs are taken greedily by IoU, largest first, down to 0.2;
+  3. a matched track takes the detection's box and updates its velocity (0.8 old + 0.2 measured,
+     the measurement spread over the frames since the last match); an unmatched one coasts;
+  4. an unmatched detection starts a track, which gets an id after 3 hits in a row (one miss
+     before that deletes it); a confirmed track is deleted after 30 missed frames (1 s).
+
+## UAV loop and ground-truth log (`uav/main.py`)
+`python -m aegislink.uav.main [--seconds 60] [--seed 1] [--no-preview] [--log PATH]`
+
+- `UavSim.step()` renders the current state, detects, tracks (with the camera motion since the
+  last frame), then advances the world and the flight by 1/30 s. A seed fixes the whole run.
+- The preview (OpenCV window, paced to real time) draws the confirmed tracks: green when matched
+  this frame, amber while coasting, with ids and a line of telemetry. `q` or Esc quits.
+- The ground-truth log (default `logs/ground_truth_<date>_<time>.jsonl`) holds a header line
+  (seed, fps, map size, origin, followed vehicle, camera) and then one line per frame: the UAV pose
+  with latitude/longitude, pitch, roll and speed, and every vehicle near the view with its
+  position, heading, speed, `visible`, `in_frame` and pixel box. All of one line is from the same
+  instant.
+- `TrackScore` compares tracks with the truth over a run: a vehicle fully in the image and at
+  least 90 % visible counts, and is covered when a track matched this frame overlaps it (IoU >=
+  0.3). A new id for a vehicle covered within the last 30 frames is an id switch; after a longer
+  gap (hidden or out of the image longer than a track lives) it is a reacquisition. Seeds 1-5,
+  60 s each: covered 94.7-95.0 % of 2740-5913 vehicle frames (the misses are the detector's 5 %),
+  0 id switches, 20 reacquisitions, 0 false track frames.
