@@ -137,9 +137,20 @@ def test_grows_only_while_the_budget_holds_data_back():
     aimd = AimdBudget()
     start = aimd.bps
     feed(aimd, [report(0.25 * i, 10 * i, 1000 * i, 5000) for i in range(5)])
-    assert aimd.bps == start + 5 * AimdBudget.STEP_BPS
+    # Until the first congestion it grows by a factor, like TCP's slow start.
+    assert aimd.bps == pytest.approx(start * AimdBudget.START_GROWTH ** 5)
+    grown = aimd.bps
     feed(aimd, [report(0.25 * i, 10 * i, 1000 * i, 5000) for i in range(5, 10)], limited=False)
-    assert aimd.bps == start + 5 * AimdBudget.STEP_BPS
+    assert aimd.bps == grown
+
+
+def test_after_the_first_congestion_it_grows_by_a_fixed_step():
+    aimd = AimdBudget(start_bps=100_000)
+    feed(aimd, [report(0.25 * i, 10 * i, 1562 * i, 5000) for i in range(4)])
+    aimd.on_report(report(1.0, 40, 1562 * 4, 60_000), 1.0, True)
+    cut = aimd.bps
+    feed(aimd, [report(1 + 0.25 * i, 40 + 10 * i, 1562 * (4 + i), 5000) for i in range(1, 5)])
+    assert aimd.bps == pytest.approx(cut + 4 * AimdBudget.STEP_BPS)
 
 
 def test_queueing_delay_cuts_to_085_of_the_received_rate():
@@ -160,10 +171,14 @@ def test_random_loss_alone_never_cuts():
     reports = []
     for i in range(40):
         # 30 % of the packets lost, the delay flat (with jitter).
-        reports.append(report(0.25 * i, 7 * i, 700 * i, 5000 + (i * 7919) % 3000, highest_seq=10 * i))
-    feed(aimd, reports)
+        jitter = (i * 7919) % 3000
+        reports.append(report(0.25 * i, 7 * i, 700 * i, 5000 + jitter, highest_seq=10 * i))
+    budgets = []
+    for r in reports:
+        aimd.on_report(r, r.time_us / 1e6, True)
+        budgets.append(aimd.bps)
     assert aimd.loss == pytest.approx(0.3)
-    assert aimd.bps == AimdBudget.START_BPS + 40 * AimdBudget.STEP_BPS
+    assert budgets == sorted(budgets) and budgets[-1] == AimdBudget.MAX_BPS
 
 
 def test_no_reports_hold_the_budget():
@@ -260,3 +275,17 @@ def test_closed_loop_at_50_kbps_converges_without_drops():
     assert delivered >= 0.99
     assert 0.6 * 50_000 <= min(budgets) and max(budgets) <= 1.3 * 50_000
     assert math.isclose(sum(budgets) / len(budgets), 50_000, rel_tol=0.25)
+
+
+def test_keyframes_take_a_bounded_share_of_a_low_budget():
+    # With no track in view the keyframe is the only image to send, but it must leave room for
+    # patches when a track comes back.
+    s = Scheduler()
+    budget = 50_000
+    keyframe_bytes = sum(len(d) for _, datagrams in run(s, 30, budget, tracks=0)
+                         for d in datagrams if parse_packet(d).header.type == MsgType.BG_KEYFRAME)
+    assert keyframe_bytes <= Scheduler.KEYFRAME_SHARE * budget / 8 * 30 + 6000
+
+
+def test_budget_floor_is_below_a_15_kbps_link():
+    assert AimdBudget.MIN_BPS < 0.85 * 15_000

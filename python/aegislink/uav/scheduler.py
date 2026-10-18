@@ -6,7 +6,8 @@ It paces datagrams with a token bucket, so even a keyframe of several datagrams 
 budget rate instead of in one burst that a slow link's queue would drop.
 
 `AimdBudget` sets that budget from the GCS's receiver reports, the way TCP sets its window:
-it grows by a fixed step while the budget is what holds data back, and is cut when the link's
+while the budget is what holds data back it grows, by a factor per report until the first sign
+of congestion (TCP's slow start) and by a fixed step after that, and it is cut when the link's
 queue is filling. A filling queue shows as a rising one-way delay, which separates congestion
 from the random loss of jamming (cutting on every loss would starve the link under jamming).
 """
@@ -57,7 +58,8 @@ class _Outgoing:
 
 class Scheduler:
     PATCH_INTERVAL_S = 0.1      # each track's patch at up to 10 Hz
-    KEYFRAME_INTERVAL_S = 1.0   # the background at up to 1 Hz
+    KEYFRAME_INTERVAL_S = 1.0   # the background at up to 1 Hz,
+    KEYFRAME_SHARE = 0.15       # and with at most this share of the budget (patches come first)
     BURST_S = 0.1               # tokens saved up beyond one image datagram
     # An image datagram takes at most this much of the budget (but carries at least MIN_CHUNK
     # bytes). On a slow link a full 1230-byte datagram holds the link for 200 ms (at 50 kbps),
@@ -73,6 +75,8 @@ class Scheduler:
         self.image = None           # the _Outgoing image message, until its last datagram is sent
         self.patch_sent_s = {}      # track id -> when its last patch was chosen
         self.keyframe_sent_s = -math.inf
+        self.keyframe_bytes = 0     # size of the last keyframe, to space out the next one
+        self.keyframe_interval_s = self.KEYFRAME_INTERVAL_S
         self.limited = False        # the budget held data back; the caller clears it
         self.sent = Counter()       # MsgType -> messages started
 
@@ -80,6 +84,9 @@ class Scheduler:
         """Returns the datagrams to send now."""
         rate = budget_bps / 8
         chunk = max(self.MIN_CHUNK, min(MAX_PAYLOAD, round(rate * self.DATAGRAM_S) - HEADER_SIZE))
+        if rate > 0:
+            self.keyframe_interval_s = max(self.KEYFRAME_INTERVAL_S,
+                                           self.keyframe_bytes / (self.KEYFRAME_SHARE * rate))
         # Saved-up tokens are capped, so that a quiet spell is not followed by a burst that a slow
         # link would have to queue.
         cap = rate * self.BURST_S + HEADER_SIZE + chunk
@@ -112,7 +119,7 @@ class Scheduler:
     def _choose_image(self, now_s, frame, chunk):
         """The image that is most overdue relative to its interval, or None if none is due."""
         self.patch_sent_s = {tid: t for tid, t in self.patch_sent_s.items() if tid in frame.patches}
-        candidates = [((now_s - self.keyframe_sent_s) / self.KEYFRAME_INTERVAL_S, -1)]
+        candidates = [((now_s - self.keyframe_sent_s) / self.keyframe_interval_s, -1)]
         for tid in frame.patches:
             age = now_s - self.patch_sent_s.get(tid, -math.inf)
             candidates.append((age / self.PATCH_INTERVAL_S, tid))
@@ -122,7 +129,9 @@ class Scheduler:
                 break
             if tid == -1:
                 self.keyframe_sent_s = now_s
-                keyframe = _Outgoing(MsgType.BG_KEYFRAME, frame.timestamp_us, frame.keyframe(), chunk)
+                body = frame.keyframe()
+                keyframe = _Outgoing(MsgType.BG_KEYFRAME, frame.timestamp_us, body, chunk)
+                self.keyframe_bytes = keyframe.size
                 return self._start(keyframe)
             body = frame.patches[tid]()
             if body is not None:
@@ -150,9 +159,10 @@ class Scheduler:
 
 class AimdBudget:
     START_BPS = 64_000
-    MIN_BPS = 16_000
+    MIN_BPS = 8_000
     MAX_BPS = 2_000_000
-    STEP_BPS = 4_000            # added per report (4 per second) while the budget limits
+    STEP_BPS = 2_000            # added per report (4 per second) while the budget limits,
+    START_GROWTH = 1.25         # or this factor per report until the first congestion
     QUEUE_DELAY_US = 40_000     # congested above this much queueing delay
     BACKOFF = 0.85              # of the received rate, on congestion
     HOLD_OFF_S = 0.5            # one cut, then time for the queue to drain
@@ -163,6 +173,7 @@ class AimdBudget:
         self.last = None
         self.delays = deque()           # (time, min delay) of recent reports with packets
         self.last_cut_s = -math.inf
+        self.slow_start = True
         self.loss = 0.0                 # over the last report interval
         self.received_bps = 0.0
         self.queue_delay_us = 0
@@ -198,6 +209,8 @@ class AimdBudget:
                     # While congested, the received rate is what the link carries.
                     self.bps = max(self.MIN_BPS, min(self.bps, self.BACKOFF * self.received_bps))
                     self.last_cut_s = now_s
+                    self.slow_start = False
                 return
         if limited:
-            self.bps = min(self.MAX_BPS, self.bps + self.STEP_BPS)
+            grown = self.bps * self.START_GROWTH if self.slow_start else self.bps + self.STEP_BPS
+            self.bps = min(self.MAX_BPS, grown)
