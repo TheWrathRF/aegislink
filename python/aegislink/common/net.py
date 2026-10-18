@@ -11,11 +11,14 @@ class LinkReceiver:
 
     Times are in microseconds. The one-way delay is the arrival time minus the header timestamp;
     on two machines the clocks differ by an unknown offset, so only changes of the delay mean
-    something (the UAV compares each report's delay with the lowest it has seen).
+    something (the UAV compares each report's delay with the lowest it has seen). Only packets
+    of `delay_types` count for the delay: an image the sender paces out over seconds keeps its
+    capture time, so its late fragments would look like queueing.
     """
 
-    def __init__(self, timeout_us=200_000):
+    def __init__(self, timeout_us=200_000, delay_types=None):
         self.reassembler = Reassembler(timeout_us=timeout_us)
+        self.delay_types = delay_types
         self.received = 0
         self.received_bytes = 0
         self.bad = 0
@@ -33,9 +36,10 @@ class LinkReceiver:
         self.received_bytes += len(datagram)
         if self.highest_seq is None or header.seq > self.highest_seq:
             self.highest_seq = header.seq
-        delay = now_us - header.timestamp_us
-        if self._min_delay_us is None or delay < self._min_delay_us:
-            self._min_delay_us = delay
+        if self.delay_types is None or header.type in self.delay_types:
+            delay = now_us - header.timestamp_us
+            if self._min_delay_us is None or delay < self._min_delay_us:
+                self._min_delay_us = delay
         return self.reassembler.push(header, packet.payload, now_us)
 
     def report(self, now_us):

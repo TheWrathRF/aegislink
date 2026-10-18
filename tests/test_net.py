@@ -73,3 +73,11 @@ def test_rate_meter_over_a_sliding_window():
     assert meter.count(29 / 30) == 30
     # Two seconds later the window is empty.
     assert meter.rate(3.0) == 0
+
+
+def test_delay_only_from_the_chosen_types():
+    rx = LinkReceiver(delay_types={MsgType.TELEMETRY})
+    tx = Packetizer()
+    rx.push(tx.packetize(MsgType.BG_KEYFRAME, 0, b"k")[0], 3_000_000)   # paced: 3 s late
+    rx.push(tx.packetize(MsgType.TELEMETRY, 2_990_000, b"t")[0], 3_000_000)
+    assert rx.report(3_000_000).min_delay_us == 10_000
