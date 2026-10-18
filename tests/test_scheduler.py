@@ -289,3 +289,46 @@ def test_keyframes_take_a_bounded_share_of_a_low_budget():
 
 def test_budget_floor_is_below_a_15_kbps_link():
     assert AimdBudget.MIN_BPS < 0.85 * 15_000
+
+
+def test_a_report_without_a_delay_sample_is_not_a_base_delay():
+    from aegislink.common.messages import NO_DELAY
+    aimd = AimdBudget(start_bps=500_000)
+    feed(aimd, [report(0.25 * i, 10 * i, 10_000 * i, 100_000) for i in range(4)])
+    before = aimd.bps
+    # Only image datagrams arrived in this interval: packets, but no delay sample.
+    aimd.on_report(report(1.0, 41, 40_500, NO_DELAY), 1.0, True)
+    feed(aimd, [report(1 + 0.25 * i, 41 + 10 * i, 40_500 + 10_000 * i, 100_000)
+                for i in range(1, 9)])
+    assert aimd.bps >= before
+
+
+def test_images_never_take_the_tokens_telemetry_and_tracks_wait_for():
+    s = Scheduler()
+    with_control = 0
+    for i in range(10 * FPS):
+        types = [p.header.type for p in parsed(s.tick(i / FPS, 30_000, frame_data(i, tracks=16)))]
+        if MsgType.TRACKS in types:
+            with_control += 1
+        else:
+            assert types == []
+    # 16 tracks: telemetry + tracks are 62 + 211 bytes, 65 kbps at 30 per second.
+    assert with_control >= 0.4 * 10 * FPS
+
+
+def test_control_bigger_than_the_saved_tokens_still_goes_out():
+    s = Scheduler()
+    sent = sum(1 for i in range(10 * FPS)
+               for p in parsed(s.tick(i / FPS, 8_000, frame_data(i, tracks=40)))
+               if p.header.type == MsgType.TRACKS)
+    assert sent > 0
+
+
+def test_an_image_cut_at_a_high_budget_still_leaves_after_a_cut():
+    s = Scheduler()
+    s.tick(0.0, 2_000_000, frame_data(0, keyframe_size=200_000))   # big datagrams, in progress
+    images = 0
+    for i in range(1, FPS + 1):
+        for p in parsed(s.tick(i / FPS, 50_000, frame_data(i, keyframe_size=200_000))):
+            images += p.header.type == MsgType.BG_KEYFRAME
+    assert images > 0

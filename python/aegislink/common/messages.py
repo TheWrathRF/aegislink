@@ -23,9 +23,10 @@ _PATCH_HEAD = struct.Struct("<IffHhhhh")  # frame, alt, heading, track id, crop 
 _KEYFRAME_HEAD = struct.Struct("<Iff")  # frame, alt, heading
 _FULL_FRAME_HEAD = struct.Struct("<I")  # frame
 # GCS time, highest seq seen, packets and datagram bytes received (both since the start), and the
-# smallest one-way delay since the last report (0 if nothing arrived). The counters are
-# cumulative so that a lost report loses nothing but its delay sample.
+# smallest one-way delay since the last report (NO_DELAY if there was no sample). The counters
+# are cumulative so that a lost report loses nothing but its delay sample.
 _REPORT = struct.Struct("<QIIQq")
+NO_DELAY = -2**63
 
 _SEEN = 1
 _MAX_TRACKS = 255

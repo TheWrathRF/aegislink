@@ -1,6 +1,7 @@
 """LinkReceiver: parsing, reassembly and the counters behind the receiver reports."""
 
 from aegislink._core import MsgType, Packetizer
+from aegislink.common.messages import NO_DELAY
 from aegislink.common.net import LinkReceiver, RateMeter
 
 
@@ -36,7 +37,7 @@ def test_min_delay_is_per_report_interval():
     assert rx.report(70_000).min_delay_us == 15_000
     # Nothing arrived since: no delay sample, the counters stay.
     quiet = rx.report(80_000)
-    assert quiet.min_delay_us == 0 and quiet.received == 3
+    assert quiet.min_delay_us == NO_DELAY and quiet.received == 3
     rx.push(tx.packetize(MsgType.TELEMETRY, 90_000, b"t")[0], 140_000)
     assert rx.report(150_000).min_delay_us == 50_000
 
@@ -81,3 +82,26 @@ def test_delay_only_from_the_chosen_types():
     rx.push(tx.packetize(MsgType.BG_KEYFRAME, 0, b"k")[0], 3_000_000)   # paced: 3 s late
     rx.push(tx.packetize(MsgType.TELEMETRY, 2_990_000, b"t")[0], 3_000_000)
     assert rx.report(3_000_000).min_delay_us == 10_000
+
+
+def test_rate_meter_forgets_old_events_without_being_read():
+    meter = RateMeter(window_s=1.0)
+    for i in range(100_000):
+        meter.add(i / 1000, 1)
+    assert len(meter.events) <= 1001
+
+
+def test_huge_timestamps_still_give_a_report():
+    from aegislink.common import messages
+    rx = LinkReceiver()
+    rx.push(Packetizer().packetize(MsgType.TELEMETRY, 2**64 - 1, b"t")[0], 1000)
+    messages.encode_report(rx.report(2000))   # packs the delay as i64
+
+
+def test_an_interval_without_a_delay_sample_says_so():
+    rx = LinkReceiver(delay_types={MsgType.TELEMETRY})
+    rx.push(Packetizer().packetize(MsgType.ROI_PATCH, 0, b"p")[0], 100_000)
+    report = rx.report(200_000)
+    assert report.received == 1 and report.min_delay_us == NO_DELAY
+    rx.push(Packetizer(5).packetize(MsgType.TELEMETRY, 300_000, b"t")[0], 300_000)
+    assert rx.report(400_000).min_delay_us == 0     # a real delay of 0 is a sample

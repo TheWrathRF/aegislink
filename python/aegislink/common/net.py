@@ -3,7 +3,9 @@
 from collections import deque
 
 from aegislink._core import ParseError, Reassembler, parse_packet
-from aegislink.common.messages import ReceiverReport
+from aegislink.common.messages import NO_DELAY, ReceiverReport
+
+_MAX_DELAY_US = 2**63 - 1   # the header timestamp is any u64, the report's delay an i64
 
 
 class LinkReceiver:
@@ -37,15 +39,16 @@ class LinkReceiver:
         if self.highest_seq is None or header.seq > self.highest_seq:
             self.highest_seq = header.seq
         if self.delay_types is None or header.type in self.delay_types:
-            delay = now_us - header.timestamp_us
+            delay = max(-_MAX_DELAY_US, min(_MAX_DELAY_US, now_us - header.timestamp_us))
             if self._min_delay_us is None or delay < self._min_delay_us:
                 self._min_delay_us = delay
         return self.reassembler.push(header, packet.payload, now_us)
 
     def report(self, now_us):
         """The receiver report for now; starts a new delay interval."""
+        delay = NO_DELAY if self._min_delay_us is None else self._min_delay_us
         report = ReceiverReport(now_us, self.highest_seq or 0, self.received, self.received_bytes,
-                                self._min_delay_us or 0)
+                                delay)
         self._min_delay_us = None
         return report
 
@@ -59,6 +62,7 @@ class RateMeter:
 
     def add(self, now, amount=1):
         self.events.append((now, amount))
+        self._trim(now)
 
     def _trim(self, now):
         while self.events and self.events[0][0] <= now - self.window_s:

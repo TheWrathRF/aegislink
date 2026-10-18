@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from typing import Callable
 
 from aegislink._core import HEADER_SIZE, MAX_PAYLOAD, Header, MsgType, encode_packet
-from aegislink.common.messages import ReceiverReport
+from aegislink.common.messages import NO_DELAY, ReceiverReport
 
 
 @dataclass
@@ -87,28 +87,33 @@ class Scheduler:
         if rate > 0:
             self.keyframe_interval_s = max(self.KEYFRAME_INTERVAL_S,
                                            self.keyframe_bytes / (self.KEYFRAME_SHARE * rate))
+        # Telemetry and tracks go together or not at all, so the GCS always gets both of a frame.
+        control = [_Outgoing(MsgType.TELEMETRY, frame.timestamp_us, frame.telemetry),
+                   _Outgoing(MsgType.TRACKS, frame.timestamp_us, frame.tracks)]
+        control_size = sum(m.size for m in control)
         # Saved-up tokens are capped, so that a quiet spell is not followed by a burst that a slow
-        # link would have to queue.
-        cap = rate * self.BURST_S + HEADER_SIZE + chunk
+        # link would have to queue; the cap still lets the largest single item through.
+        cap = rate * self.BURST_S + max(HEADER_SIZE + chunk, control_size)
         elapsed = 1 / 30 if self.last_s is None else now_s - self.last_s
         self.tokens = min(cap, self.tokens + rate * elapsed)
         self.last_s = now_s
 
         out = []
-        # Telemetry and tracks go together or not at all, so the GCS always gets both of a frame.
-        control = [_Outgoing(MsgType.TELEMETRY, frame.timestamp_us, frame.telemetry),
-                   _Outgoing(MsgType.TRACKS, frame.timestamp_us, frame.tracks)]
-        if sum(m.size for m in control) <= self.tokens:
-            for message in control:
-                self._start(message)
-                while not message.done:
-                    out.append(self._next_datagram(message))
-        else:
-            self.limited = True  # skipped; the next frame's are newer anyway
+        if control_size > self.tokens:
+            # Skipped (the next frame's are newer), and no image may take the tokens they wait for.
+            self.limited = True
+            return out
+        for message in control:
+            self._start(message)
+            while not message.done:
+                out.append(self._next_datagram(message))
 
         if self.image is None:
             self.image = self._choose_image(now_s, frame, chunk)
-        while self.image is not None and self.image.next_size <= self.tokens:
+        # An image cut for a higher budget may have datagrams larger than the tokens can grow to
+        # now: such a datagram leaves when the tokens cover one of today's size (and runs a debt).
+        datagram_size = HEADER_SIZE + chunk
+        while self.image is not None and min(self.image.next_size, datagram_size) <= self.tokens:
             out.append(self._next_datagram(self.image))
             if self.image.done:
                 self.image = self._choose_image(now_s, frame, chunk)
@@ -196,7 +201,7 @@ class AimdBudget:
             self.received_bps = (report.received_bytes - last.received_bytes) * 8 / dt
         self.loss = min(1.0, max(0.0, 1 - received / expected)) if expected > 0 else 0.0
 
-        if received > 0:
+        if received > 0 and report.min_delay_us != NO_DELAY:
             # The lowest delay is the empty-queue delay (plus any clock offset), so the rest of
             # a report's lowest delay is time spent queueing. Jitter rarely lifts the lowest
             # delay of a whole interval.
