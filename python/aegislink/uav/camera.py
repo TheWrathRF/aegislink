@@ -10,6 +10,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from aegislink.common import config
+
 
 @dataclass
 class Pose:
@@ -20,7 +22,7 @@ class Pose:
 
 
 class NadirCamera:
-    def __init__(self, width=1280, height=720, hfov_deg=60.0):
+    def __init__(self, width=config.FRAME_WIDTH, height=config.FRAME_HEIGHT, hfov_deg=60.0):
         self.width = width
         self.height = height
         self.hfov_deg = hfov_deg

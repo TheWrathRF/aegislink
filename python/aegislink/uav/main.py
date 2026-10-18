@@ -2,9 +2,11 @@
 
     python -m aegislink.uav.main                 # OpenCV preview window (q or Esc quits)
     python -m aegislink.uav.main --no-preview --seconds 60
+    python -m aegislink.uav.main --send          # also stream to the GCS through the proxy
 
 Every run writes the ground truth (UAV pose and the vehicles near the camera, one JSON object per
-frame) to logs/, and prints how well the tracks matched the true vehicles.
+frame) to logs/, and prints how well the tracks matched the true vehicles. With --send it runs in
+real time and streams the foveated and the baseline video (see aegislink.common.config).
 """
 
 import argparse
@@ -15,13 +17,15 @@ from pathlib import Path
 
 import cv2
 
+from aegislink._core import MsgType
+from aegislink.common import config
+from aegislink.common.config import FPS
 from aegislink.uav.camera import NadirCamera
 from aegislink.uav.detector import SimulatedDetector
 from aegislink.uav.sim_world import World, WorldConfig
+from aegislink.uav.streamer import Streamer
 from aegislink.uav.telemetry import Flight
 from aegislink.uav.tracker import IouTracker, iou
-
-FPS = 30
 
 
 @dataclass
@@ -191,9 +195,9 @@ def draw_overlay(r):
     return image
 
 
-def run(seconds=60.0, seed=1, preview=True, log_path=None):
-    """Runs the loop for `seconds` of simulated time (the preview paces it to real time) and
-    returns the TrackScore."""
+def run(seconds=60.0, seed=1, preview=True, log_path=None, streamer=None):
+    """Runs the loop for `seconds` of simulated time and returns the TrackScore. The preview and
+    the streamer pace it to real time."""
     if log_path is None:
         log_path = Path("logs") / f"ground_truth_{time.strftime('%Y%m%d_%H%M%S')}.jsonl"
     sim = UavSim(seed=seed)
@@ -202,15 +206,20 @@ def run(seconds=60.0, seed=1, preview=True, log_path=None):
     next_time = time.perf_counter()
     try:
         for _ in range(int(seconds * FPS)):
+            captured_us = time.monotonic_ns() // 1000
             r = sim.step()
             log.write(r)
             score.add(r.truths, r.tracks)
+            if streamer:
+                streamer.send(r, time.monotonic(), captured_us)
+            next_time += 1 / FPS
             if preview:
                 cv2.imshow("AegisLink UAV", draw_overlay(r))
-                next_time += 1 / FPS
                 key = cv2.waitKey(max(1, int((next_time - time.perf_counter()) * 1000)))
                 if key in (ord("q"), 27):
                     break
+            elif streamer:
+                time.sleep(max(0.0, next_time - time.perf_counter()))
     finally:
         log.close()
         if preview:
@@ -224,13 +233,38 @@ def main():
     parser.add_argument("--seed", type=int, default=1, help="world and detector seed")
     parser.add_argument("--no-preview", action="store_true", help="run as fast as possible")
     parser.add_argument("--log", type=Path, help="ground-truth log path (default: logs/...)")
+    parser.add_argument("--send", action="store_true", help="stream to the GCS in real time")
+    parser.add_argument("--direct", action="store_true", help="send to the GCS, not the proxy")
+    parser.add_argument("--no-baseline", action="store_true", help="send only the foveated stream")
+    parser.add_argument("--fovea-port", type=int, help="where the foveated stream goes")
+    parser.add_argument("--baseline-port", type=int, help="where the baseline stream goes")
+    parser.add_argument("--report-port", type=int, default=config.REPORTS_TO_UAV,
+                        help="where receiver reports arrive")
     args = parser.parse_args()
+    streamer = None
+    if args.send:
+        fovea = args.fovea_port or (config.FOVEA_TO_GCS if args.direct else config.FOVEA_TO_PROXY)
+        baseline = args.baseline_port or (config.BASELINE_TO_GCS if args.direct
+                                          else config.BASELINE_TO_PROXY)
+        streamer = Streamer(fovea, baseline, args.report_port, baseline=not args.no_baseline)
     started = time.perf_counter()
-    score = run(args.seconds, args.seed, not args.no_preview, args.log)
-    print(f"ran {time.perf_counter() - started:.1f} s; vehicles in clear view: "
+    try:
+        score = run(args.seconds, args.seed, not args.no_preview, args.log, streamer)
+    finally:
+        if streamer:
+            streamer.close()
+    elapsed = time.perf_counter() - started
+    print(f"ran {elapsed:.1f} s; vehicles in clear view: "
           f"{score.truth_frames} frames, covered by a track: {score.coverage:.1%}, "
           f"id switches: {score.id_switches}, reacquired after a long gap: {score.reacquired}, "
           f"false track frames: {score.false_track_frames}")
+    if streamer:
+        sent = streamer.scheduler.sent
+        print(f"sent: foveated {streamer.sent_bytes['fovea'] * 8 / elapsed / 1000:.1f} kbps "
+              f"({sent[MsgType.TRACKS]} track lists, {sent[MsgType.ROI_PATCH]} patches, "
+              f"{sent[MsgType.BG_KEYFRAME]} keyframes), baseline "
+              f"{streamer.sent_bytes['baseline'] * 8 / elapsed / 1000:.1f} kbps; "
+              f"final budget {streamer.budget.bps / 1000:.1f} kbps")
 
 
 if __name__ == "__main__":
