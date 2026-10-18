@@ -221,24 +221,30 @@ Every decoder checks the length first and raises `ValueError`.
 - Image messages carry the camera's altitude and heading but not its position: the GCS takes
   the position from the telemetry of the same frame.
 - Report counters are cumulative since the start, so a lost report loses only its delay sample.
-  The delay is the smallest arrival time minus header timestamp since the previous report (0 if
-  nothing arrived); only its changes matter, so the two clocks need not agree.
+  The delay is the smallest arrival time minus header timestamp since the previous report, or
+  `NO_DELAY` (-2^63) if there was no sample; only its changes matter, so the two clocks need not
+  agree. It is clamped to the i64 range (the timestamp is any u64).
 
 ## Encoding (`uav/encoder.py`)
 - Keyframe: the frame in gray, resized to 480 x 270 (`INTER_AREA`), WebP quality 25.
 - Patch: the track box rounded, padded by 8 px and clipped to the image, in colour, WebP quality
   70; a box entirely outside the image gives no patch.
 - Baseline: the whole 1280 x 720 frame as JPEG quality 50.
-- `decode_image` returns `None` for bytes that do not decode.
+- `decode_image` returns `None` for bytes that do not decode. Given the expected size, it first
+  reads the size from the WebP or JPEG header (`image_size`) and refuses any other format or
+  size: a few hundred bytes can claim a 16000 x 16000 image, which would take seconds and
+  gigabytes to decode.
 
 ## Foveated stream (`uav/scheduler.py`, `uav/streamer.py`)
 `Scheduler.tick` runs once per frame with the current budget and spends it in priority order:
 
 1. **Tokens**: the budget refills a token bucket for the time since the last frame. The bucket
-   holds at most 0.1 s of budget plus one image datagram, so a quiet spell does not end in a
-   burst. A datagram is sent only when the tokens cover it.
+   holds at most 0.1 s of budget plus one image datagram (or the telemetry and tracks, if
+   larger), so a quiet spell does not end in a burst. A datagram is sent only when the tokens
+   cover it.
 2. **Telemetry and tracks** of this frame, both or neither, so the GCS always has both of a
-   frame. If they do not fit they are skipped; the next frame's are newer.
+   frame. If they do not fit they are skipped (the next frame's are newer), and so is every
+   image in that frame, so that images never take the tokens they are waiting for.
 3. **One image message at a time**, chosen by how overdue it is: `age / interval`, where a patch
    of a track matched this frame has an interval of 0.1 s (10 Hz) and the keyframe an interval of
    1 s, stretched so that keyframes use at most 15 % of the budget. The most overdue image is
@@ -246,7 +252,9 @@ Every decoder checks the length first and raises `ValueError`.
    else is started until it is done.
 4. **Datagram size**: an image is cut into datagrams of at most 30 ms of budget (at least 200
    bytes of payload, at most 1200). At 50 kbps a full 1230-byte datagram would hold the link for
-   about 200 ms and delay the next telemetry behind it.
+   about 200 ms and delay the next telemetry behind it. When the budget drops while an image is
+   being sent, its remaining larger datagrams leave once the tokens cover one datagram of the
+   new size (the bucket then runs a short debt).
 
 The scheduler numbers datagrams itself when they leave (`seq`, `msg_id`), so a skipped message
 leaves no gap that the GCS would count as a loss. It sets `limited` whenever the budget held
@@ -255,7 +263,8 @@ something back.
 `AimdBudget` (start 64 kbps, between 8 kbps and 2 Mbps) updates the budget on every receiver
 report:
 
-- **Congestion** is a filling queue: the report's minimum delay minus the lowest minimum of the
+- **Congestion** is a filling queue (reports with packets but no delay sample are skipped): the
+  report's minimum delay minus the lowest minimum of the
   last 10 s is above 40 ms. Random loss from jamming does not raise the delay, so it never cuts
   the budget. On congestion the budget becomes at most 0.85 x the rate the GCS received over the
   report interval (while the link is congested, that is its capacity), at most once per 0.5 s
@@ -278,10 +287,14 @@ on Windows a send to a closed port makes the next receive on the same socket fai
   each. The foveated link's reassembler waits 4 s (a paced keyframe takes about 3 s at 50
   kbps), the baseline's 200 ms. Only telemetry and tracks count for the delay: they are sent the
   moment they are captured, while a paced image keeps its capture time.
-- It keeps the newest of everything by frame number (older arrivals are ignored): telemetry, the
-  track list, the keyframe and one patch per track; a patch whose track is gone is dropped. A
-  patch whose box lies outside the image or whose image does not match the box, and any body or
-  image that does not decode, is counted in `bad_messages` and dropped.
+- It keeps the newest of everything by frame number (older arrivals are ignored and not
+  counted): telemetry, the track list, the keyframe and one patch per track of the newest list.
+  A frame number more than 10 s (300 frames) below the held one is taken as a new run of the UAV
+  (or the held one as forged): telemetry or tracks from it reset the foveated state.
+- Images must have their expected size in their header before they are decoded: a patch the
+  size of its box (inside the image), a keyframe 480 x 270, a baseline frame 1280 x 720 (checked
+  on arrival, decoded once when first shown). Anything else, and any body that does not decode,
+  is counted in `bad_messages` and dropped.
 - Every 250 ms it sends a receiver report for link 1 to the UAV.
 - The viewer (`gcs/viewer.py`, 30 Hz, OpenCV) shows the baseline and the foveated view side by
   side at half size with the received kbps and message rates. The foveated view is the newest

@@ -105,24 +105,33 @@ Without the proxy: `--direct` on both nodes.
 - `tests/test_messages.py`: body sizes, round trips (centimetre latitude/longitude, wrapped ids,
   boxes outside the image), every decoder rejects a wrong length.
 - `tests/test_encoder.py`: gray 480 x 270 keyframe, padded and clipped patch boxes, patch close
-  to the original crop, JPEG baseline, garbage decodes to `None`.
+  to the original crop, JPEG baseline, garbage decodes to `None`; image sizes read from lossy
+  and lossless WebP and JPEG headers, and a JPEG claiming 65000 x 65000 refused before decoding
+  (OpenCV raises on it otherwise).
 - `tests/test_net.py`: counters, highest seq, bad datagrams, minimum delay per report interval
-  (also negative), loss as seq gaps, a 4 s reassembly timeout, delay only from chosen types, the
-  rate meter.
+  (also negative), loss as seq gaps, a 4 s reassembly timeout, delay only from chosen types and
+  `NO_DELAY` without a sample, a u64 timestamp that still encodes, the rate meter (bounded
+  without reads).
 - `tests/test_scheduler.py`: never more than the budget over 0.1-2 s windows (and over 95 % of
   it used); telemetry and tracks every frame at 50 kbps; a keyframe paced and whole at 50 kbps;
   no seq gaps; whole frames skipped below the control rate; 10 Hz patches and 1 Hz keyframes at a
-  high budget; a new track's patch first; keyframes within their budget share. AIMD: slow start
+  high budget; a new track's patch first; keyframes within their budget share; no image in a
+  frame whose telemetry and tracks were skipped (16 tracks at 30 kbps); telemetry and tracks
+  larger than 0.1 s of budget still sent; an image cut at 2 Mbps still leaves after a cut to 50
+  kbps. AIMD: slow start
   then fixed steps, growth only when limited, cut to 0.85 x the received rate on queueing delay
   with a hold-off, no cut for 30 % random loss, held without reports, old low delays forgotten,
-  any clock offset, limits. A closed loop with a simulated 50 kbps drop-tail link: no drops
+  any clock offset, limits, a report without a delay sample is not a base delay. A closed loop with a simulated 50 kbps drop-tail link: no drops
   after 10 s, 99 % of frames' tracks delivered, budget within 60-130 % of the link (this test
   failed with full-size image datagrams).
 - `tests/test_streamer.py`: a simulated frame's telemetry, tracks, patches and keyframe decode
   to what the frame holds; the baseline is one JPEG per frame.
 - `tests/test_gcs.py`: newest telemetry and tracks kept, patches dropped with their track, bad
   patch boxes and sizes and undecodable bodies counted, reports 4 times per second, the viewer
-  with no data and with a patch cut at the image edge.
+  with no data and with a patch cut at the image edge; a u64 timestamp does not stop the
+  reports; oversize or wrong-size patches, keyframes and baseline frames dropped before decoding;
+  a restarted UAV (frame 500, then 0) and a forged frame 0xFFFFFFFF are followed; older messages
+  not counted; patches only for listed tracks.
 - `tests/test_stream.py`: the UAV, the proxy and the GCS as three processes, measured by the
   GCS over 8 s after a 5 s warm-up. Clean link: the foveated stream is at most 10 % of the
   baseline and 99 % of frames' telemetry and tracks arrive. Both links at 50 kbps: the foveated

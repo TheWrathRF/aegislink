@@ -26,7 +26,7 @@ Work in progress. So far it has:
   patches of the tracked vehicles, and now and then a small gray background, in that order of
   priority, within a byte budget that follows the ground station's receiver reports (grown
   while the link keeps up, cut when its queue starts to fill). Measured through the proxy over
-  10 s: on a clean link the foveated stream used 99.7 kbps against 14,887 kbps for the baseline
+  10 s: on a clean link the foveated stream used 100.6 kbps against 14,908 kbps for the baseline
   (0.67 %); with both links limited to 50 kbps, the telemetry and boxes of every frame arrived
   (30 per second) with about 5 patches per second, while not one baseline frame got through.
   A minimal OpenCV viewer shows both streams side by side.
