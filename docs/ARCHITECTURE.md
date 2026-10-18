@@ -10,11 +10,13 @@ used from Python through pybind11 (`aegislink._core`).
   `aegis_proxy` static library, so the tests can link it.
 - `cpp/bindings/aegis_core.cpp`: the pybind11 module `aegislink._core`.
 - `cpp/tests/`: C++ unit tests, one executable per module, with a tiny runner (`test_runner.hpp`).
-- `python/aegislink/`: the Python package. `common/proxy_control.py` talks to the proxy's
-  control port; `common/geo.py` converts local metres to latitude/longitude;
-  `tools/loopback_check.py` sends messages over loopback UDP and checks that they arrive intact;
-  `tools/link_meter.py` measures a proxy link; `uav/` is the UAV side (synthetic world, camera,
-  flight, detector, tracker).
+- `python/aegislink/`: the Python package. `common/config.py` holds the frame rate, image size
+  and default ports; `common/messages.py` the message bodies; `common/net.py` the link receiver;
+  `common/proxy_control.py` talks to the proxy's control port; `common/geo.py` converts local
+  metres to latitude/longitude; `tools/loopback_check.py` sends messages over loopback UDP and
+  checks that they arrive intact; `tools/link_meter.py` measures a proxy link; `uav/` is the UAV
+  side (synthetic world, camera, flight, detector, tracker, encoder, scheduler, streamer);
+  `gcs/` the ground station (receiver, viewer).
 - `tests/`: pytest.
 - One `CMakeLists.txt` builds the C++ tests and the proxy (plain CMake), and the Python module
   plus the proxy when scikit-build-core runs it (`SKBUILD` is set, the tests are skipped, and the
@@ -172,7 +174,7 @@ Everything uses a local frame in metres: x = east, y = north, origin at the map 
      before that deletes it); a confirmed track is deleted after 30 missed frames (1 s).
 
 ## UAV loop and ground-truth log (`uav/main.py`)
-`python -m aegislink.uav.main [--seconds 60] [--seed 1] [--no-preview] [--log PATH]`
+`python -m aegislink.uav.main [--seconds 60] [--seed 1] [--no-preview] [--log PATH] [--send]`
 
 - `UavSim.step()` renders the current state, detects, tracks (with the camera motion since the
   last frame), then advances the world and the flight by 1/30 s. A seed fixes the whole run.
@@ -189,3 +191,103 @@ Everything uses a local frame in metres: x = east, y = north, origin at the map 
   gap (hidden or out of the image longer than a track lives) it is a reacquisition. Seeds 1-5,
   60 s each: covered 94.7-95.0 % of 2740-5913 vehicle frames (the misses are the detector's 5 %),
   0 id switches, 20 reacquisitions, 0 false track frames.
+- With `--send` the loop runs in real time and hands every frame to the `Streamer` (below); the
+  header timestamp is the capture time from the monotonic clock.
+
+## Streams and ports (`common/config.py`)
+Three proxy links, numbered in this order on the proxy command line:
+
+| Link | UAV sends to | GCS receives on | Carries |
+|---|---|---|---|
+| 1 | 5600 | 5601 | foveated stream: telemetry, tracks, ROI patches, keyframes |
+| 2 | 5602 | 5603 | baseline: every frame as a JPEG |
+| 3 | 5604 (from the GCS) | 5605 (UAV) | receiver reports for link 1 |
+
+`--direct` on both nodes skips the proxy (the UAV sends to 5601/5603, the GCS reports to 5605).
+
+## Message bodies (`common/messages.py`)
+Fixed little-endian structs after the wire header; image messages end with the encoded image.
+Every decoder checks the length first and raises `ValueError`.
+
+| Type | Body | Bytes |
+|---|---|---|
+| TELEMETRY | frame u32, lat i32, lon i32 (1e-7 degree), alt, speed, heading, pitch, roll (f32) | 32 |
+| TRACKS | frame u32, count u8, then per track: id u16, x1 y1 x2 y2 i16 (pixels), flags u8 (1 = matched this frame) | 5 + 11 per track |
+| ROI_PATCH | frame u32, alt f32, heading f32, track id u16, crop box 4 x i16, WebP | 20 + image |
+| BG_KEYFRAME | frame u32, alt f32, heading f32, WebP | 12 + image |
+| FULL_FRAME | frame u32, JPEG | 4 + image |
+| RECEIVER_REPORT | GCS time u64 (us), highest seq u32, packets u32, bytes u64, min delay i64 (us) | 32 |
+
+- Image messages carry the camera's altitude and heading but not its position: the GCS takes
+  the position from the telemetry of the same frame.
+- Report counters are cumulative since the start, so a lost report loses only its delay sample.
+  The delay is the smallest arrival time minus header timestamp since the previous report (0 if
+  nothing arrived); only its changes matter, so the two clocks need not agree.
+
+## Encoding (`uav/encoder.py`)
+- Keyframe: the frame in gray, resized to 480 x 270 (`INTER_AREA`), WebP quality 25.
+- Patch: the track box rounded, padded by 8 px and clipped to the image, in colour, WebP quality
+  70; a box entirely outside the image gives no patch.
+- Baseline: the whole 1280 x 720 frame as JPEG quality 50.
+- `decode_image` returns `None` for bytes that do not decode.
+
+## Foveated stream (`uav/scheduler.py`, `uav/streamer.py`)
+`Scheduler.tick` runs once per frame with the current budget and spends it in priority order:
+
+1. **Tokens**: the budget refills a token bucket for the time since the last frame. The bucket
+   holds at most 0.1 s of budget plus one image datagram, so a quiet spell does not end in a
+   burst. A datagram is sent only when the tokens cover it.
+2. **Telemetry and tracks** of this frame, both or neither, so the GCS always has both of a
+   frame. If they do not fit they are skipped; the next frame's are newer.
+3. **One image message at a time**, chosen by how overdue it is: `age / interval`, where a patch
+   of a track matched this frame has an interval of 0.1 s (10 Hz) and the keyframe an interval of
+   1 s, stretched so that keyframes use at most 15 % of the budget. The most overdue image is
+   encoded and its datagrams go out as the tokens allow, over several frames if needed; nothing
+   else is started until it is done.
+4. **Datagram size**: an image is cut into datagrams of at most 30 ms of budget (at least 200
+   bytes of payload, at most 1200). At 50 kbps a full 1230-byte datagram would hold the link for
+   about 200 ms and delay the next telemetry behind it.
+
+The scheduler numbers datagrams itself when they leave (`seq`, `msg_id`), so a skipped message
+leaves no gap that the GCS would count as a loss. It sets `limited` whenever the budget held
+something back.
+
+`AimdBudget` (start 64 kbps, between 8 kbps and 2 Mbps) updates the budget on every receiver
+report:
+
+- **Congestion** is a filling queue: the report's minimum delay minus the lowest minimum of the
+  last 10 s is above 40 ms. Random loss from jamming does not raise the delay, so it never cuts
+  the budget. On congestion the budget becomes at most 0.85 x the rate the GCS received over the
+  report interval (while the link is congested, that is its capacity), at most once per 0.5 s
+  while the queue drains.
+- **Growth**, only when `limited` was set: x 1.25 per report until the first congestion (TCP's
+  slow start), then + 2 kbps per report.
+- **No reports** (blackout): the budget is held.
+- A report older than the last one is ignored. A fixed delay that grows (a slower route) looks
+  like congestion until it has been the lowest for 10 s.
+
+`Streamer` builds each frame's bodies (`frame_data`), sends the scheduler's datagrams to link 1
+and the baseline (`BaselineSender`: one JPEG per frame, all fragments at once) to link 2, and
+reads receiver reports from its own socket. Sending and receiving use separate sockets, because
+on Windows a send to a closed port makes the next receive on the same socket fail.
+
+## Ground station (`gcs/`)
+`python -m aegislink.gcs.main [--no-view] [--seconds S] [--warmup S] [--summary] [--snapshot PNG] [--direct]`
+
+- `GroundStation` (`gcs/receiver.py`) reads both links with `select()` and one `LinkReceiver`
+  each. The foveated link's reassembler waits 4 s (a paced keyframe takes about 3 s at 50
+  kbps), the baseline's 200 ms. Only telemetry and tracks count for the delay: they are sent the
+  moment they are captured, while a paced image keeps its capture time.
+- It keeps the newest of everything by frame number (older arrivals are ignored): telemetry, the
+  track list, the keyframe and one patch per track; a patch whose track is gone is dropped. A
+  patch whose box lies outside the image or whose image does not match the box, and any body or
+  image that does not decode, is counted in `bad_messages` and dropped.
+- Every 250 ms it sends a receiver report for link 1 to the UAV.
+- The viewer (`gcs/viewer.py`, 30 Hz, OpenCV) shows the baseline and the foveated view side by
+  side at half size with the received kbps and message rates. The foveated view is the newest
+  keyframe scaled up, with each track's newest patch pasted centred on the track's newest box;
+  the keyframe is not moved with the camera, so it slides out of line until the next one.
+- `--summary` prints one JSON line about the `--seconds` after `--warmup` seconds from the first
+  foveated datagram: kbps per link and their ratio, telemetry and track messages per second
+  and the share of frames that arrived, patches per second, keyframes, baseline frames per
+  second, bad packets and messages, expired partial messages.

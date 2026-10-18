@@ -44,6 +44,23 @@ python -m aegislink.uav.main
 python -m aegislink.uav.main --no-preview --seconds 60 --seed 2
 ```
 
+Streaming through the proxy: three terminals. The GCS window shows the baseline and the
+foveated stream side by side (q or Esc quits).
+```
+ew_chaos_proxy --link 5600:5601 --link 5602:5603 --link 5604:5605 --control 5700
+python -m aegislink.gcs.main
+python -m aegislink.uav.main --no-preview --send
+```
+The links can be changed while it runs, for example to 50 kbps on both video links:
+```
+python -c "from aegislink.common.proxy_control import ProxyControl as P; c = P(5700); c.configure(1, kbps=50); c.configure(2, kbps=50)"
+```
+Headless, the GCS measures what arrives (here 10 s after a 5 s warm-up) and prints it as JSON:
+```
+python -m aegislink.gcs.main --no-view --seconds 10 --warmup 5 --summary
+```
+Without the proxy: `--direct` on both nodes.
+
 ## What the tests cover
 - `cpp/tests/test_crc32`: catalogued check values, chaining.
 - `cpp/tests/test_protocol`: byte layout, round trip, every rejection path, a flipped bit
@@ -85,6 +102,32 @@ python -m aegislink.uav.main --no-preview --seconds 60 --seed 2
   pose, positions and boxes agree within 1 px; tracks cover over 90 % of the vehicles in clear
   view with at most 1 id switch and under 1 % false track frames; the score counts switches,
   reacquisitions and false tracks; a seed repeats a run exactly. About 10 s.
+- `tests/test_messages.py`: body sizes, round trips (centimetre latitude/longitude, wrapped ids,
+  boxes outside the image), every decoder rejects a wrong length.
+- `tests/test_encoder.py`: gray 480 x 270 keyframe, padded and clipped patch boxes, patch close
+  to the original crop, JPEG baseline, garbage decodes to `None`.
+- `tests/test_net.py`: counters, highest seq, bad datagrams, minimum delay per report interval
+  (also negative), loss as seq gaps, a 4 s reassembly timeout, delay only from chosen types, the
+  rate meter.
+- `tests/test_scheduler.py`: never more than the budget over 0.1-2 s windows (and over 95 % of
+  it used); telemetry and tracks every frame at 50 kbps; a keyframe paced and whole at 50 kbps;
+  no seq gaps; whole frames skipped below the control rate; 10 Hz patches and 1 Hz keyframes at a
+  high budget; a new track's patch first; keyframes within their budget share. AIMD: slow start
+  then fixed steps, growth only when limited, cut to 0.85 x the received rate on queueing delay
+  with a hold-off, no cut for 30 % random loss, held without reports, old low delays forgotten,
+  any clock offset, limits. A closed loop with a simulated 50 kbps drop-tail link: no drops
+  after 10 s, 99 % of frames' tracks delivered, budget within 60-130 % of the link (this test
+  failed with full-size image datagrams).
+- `tests/test_streamer.py`: a simulated frame's telemetry, tracks, patches and keyframe decode
+  to what the frame holds; the baseline is one JPEG per frame.
+- `tests/test_gcs.py`: newest telemetry and tracks kept, patches dropped with their track, bad
+  patch boxes and sizes and undecodable bodies counted, reports 4 times per second, the viewer
+  with no data and with a patch cut at the image edge.
+- `tests/test_stream.py`: the UAV, the proxy and the GCS as three processes, measured by the
+  GCS over 8 s after a 5 s warm-up. Clean link: the foveated stream is at most 10 % of the
+  baseline and 99 % of frames' telemetry and tracks arrive. Both links at 50 kbps: the foveated
+  stream stays under the limit, 99 % of frames' tracks arrive (at least 29.5 per second), and no
+  baseline frame gets through. About 30 s.
 
 ## CI
 `.github/workflows/ci.yml` runs on every push: Windows (`msvc` preset) and Ubuntu (`gcc-asan`

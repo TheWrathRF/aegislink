@@ -21,6 +21,15 @@ Work in progress. So far it has:
   noise, false alarms) feeds an IoU tracker that compensates for the camera's own motion. Over
   five 60 s runs the tracks covered 94.7-95.0 % of the vehicles in clear view with no id
   switches.
+- **Foveated streaming** from the UAV to a ground station, next to a plain full-frame JPEG
+  stream for comparison. The UAV sends telemetry and track boxes every frame, small colour
+  patches of the tracked vehicles, and now and then a small gray background, in that order of
+  priority, within a byte budget that follows the ground station's receiver reports (grown
+  while the link keeps up, cut when its queue starts to fill). Measured through the proxy over
+  10 s: on a clean link the foveated stream used 99.7 kbps against 14,887 kbps for the baseline
+  (0.67 %); with both links limited to 50 kbps, the telemetry and boxes of every frame arrived
+  (30 per second) with about 5 patches per second, while not one baseline frame got through.
+  A minimal OpenCV viewer shows both streams side by side.
 
 ## Build and test
 
@@ -45,6 +54,14 @@ To watch the UAV simulation with its tracked boxes (it also writes the ground tr
 
 ```
 python -m aegislink.uav.main
+```
+
+To stream it through the proxy to the ground station viewer, run each in its own terminal:
+
+```
+ew_chaos_proxy --link 5600:5601 --link 5602:5603 --link 5604:5605 --control 5700
+python -m aegislink.gcs.main
+python -m aegislink.uav.main --no-preview --send
 ```
 
 C++ unit tests: `cmake --preset msvc` (Windows) or `cmake --preset gcc-asan` (Linux), then
