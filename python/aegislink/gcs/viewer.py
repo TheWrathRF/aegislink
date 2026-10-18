@@ -11,7 +11,6 @@ import numpy as np
 
 from aegislink._core import MsgType
 from aegislink.common import config
-from aegislink.uav.encoder import decode_image
 
 PANE_WIDTH, PANE_HEIGHT = config.FRAME_WIDTH // 2, config.FRAME_HEIGHT // 2
 HUD_HEIGHT = 44
@@ -49,8 +48,8 @@ def _paste(canvas, image, cx, cy):
 
 
 def render_baseline(station):
-    image = decode_image(station.full_frame.image) if station.full_frame else None
-    if image is None or image.shape[:2] != (config.FRAME_HEIGHT, config.FRAME_WIDTH):
+    image = station.baseline_image()
+    if image is None:
         return np.zeros((config.FRAME_HEIGHT, config.FRAME_WIDTH, 3), np.uint8)
     return image
 

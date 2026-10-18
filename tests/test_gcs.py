@@ -106,3 +106,60 @@ def test_viewer_draws_without_data_and_with_a_patch_at_the_edge(station):
     # The patch is pasted centred on the track's box, cut at the frame edge.
     assert tuple(fovea[715, 1279]) == pytest.approx((0, 0, 255), abs=8)
     assert viewer.compose(station, 1.0).shape == image.shape
+
+
+def test_a_huge_timestamp_does_not_stop_the_reports(station):
+    from aegislink._core import Header, encode_packet
+    datagram = encode_packet(Header(MsgType.TELEMETRY, 0, 2**64 - 1, 0, 0, 1), b"x")
+    station._receive("fovea", datagram, 1.0)
+    station.send_report_if_due(1.0)
+    assert station.reports.recv(2048)
+
+
+def huge_jpeg(width=65000, height=65000):
+    data = bytearray(cv2.imencode(".jpg", np.zeros((8, 8, 3), np.uint8))[1].tobytes())
+    sof = data.index(b"\xff\xc0")
+    data[sof + 5:sof + 9] = height.to_bytes(2, "big") + width.to_bytes(2, "big")
+    return bytes(data)
+
+
+def test_images_with_a_wrong_size_are_dropped_before_decoding(station):
+    track = messages.TrackBox(7, (10, 10, 30, 20), True)
+    deliver(station, MsgType.TRACKS, messages.encode_tracks(1, [track]))
+    bomb = huge_jpeg()
+    deliver(station, MsgType.ROI_PATCH, messages.encode_patch(
+        messages.PatchMsg(1, 150, 0, 7, (2, 2, 38, 28), bomb)))
+    deliver(station, MsgType.BG_KEYFRAME, messages.encode_keyframe(
+        messages.KeyframeMsg(1, 150, 0, bomb)))
+    big = cv2.imencode(".webp", np.zeros((540, 960), np.uint8))[1].tobytes()
+    deliver(station, MsgType.BG_KEYFRAME, messages.encode_keyframe(
+        messages.KeyframeMsg(1, 150, 0, big)))   # decodes, but is not a 480 x 270 keyframe
+    deliver(station, MsgType.FULL_FRAME, messages.encode_full_frame(
+        messages.FullFrameMsg(1, bomb)), link="baseline")
+    assert station.bad_messages == 4
+    assert station.patches == {} and station.keyframe is None and station.full_frame is None
+    viewer.compose(station, 1.0)
+
+
+def test_a_restarted_uav_is_followed(station):
+    for frame in (500, 0, 1):
+        deliver(station, MsgType.TELEMETRY, messages.encode_telemetry(
+            messages.TelemetryMsg(frame, 0, 0, 0, 0, 0, 0, 0)))
+        deliver(station, MsgType.TRACKS, messages.encode_tracks(frame, []))
+    assert station.telemetry.frame == 1 and station.tracks_frame == 1
+
+
+def test_one_forged_frame_number_does_not_freeze_the_tracks(station):
+    deliver(station, MsgType.TRACKS, messages.encode_tracks(0xFFFFFFFF, []))
+    track = messages.TrackBox(1, (0, 0, 9, 9), True)
+    deliver(station, MsgType.TRACKS, messages.encode_tracks(10, [track]))
+    assert station.tracks_frame == 10
+
+
+def test_older_messages_are_not_counted_and_patches_need_a_track(station):
+    deliver(station, MsgType.TRACKS, messages.encode_tracks(10, []))
+    deliver(station, MsgType.TRACKS, messages.encode_tracks(9, []))
+    assert station.message_rate[MsgType.TRACKS].count(1.0) == 1
+    patch = messages.PatchMsg(10, 150, 0, 7, (2, 2, 38, 28), webp(36, 26))
+    deliver(station, MsgType.ROI_PATCH, messages.encode_patch(patch))
+    assert station.patches == {}

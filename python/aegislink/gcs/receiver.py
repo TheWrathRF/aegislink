@@ -12,13 +12,26 @@ import numpy as np
 from aegislink._core import MsgType, Packetizer
 from aegislink.common import config, messages
 from aegislink.common.net import LinkReceiver, RateMeter
-from aegislink.uav.encoder import decode_image
+from aegislink.uav.encoder import KEYFRAME_SIZE, decode_image, image_size
 
 REPORT_INTERVAL_S = 0.25
 # A keyframe is paced out at the budget rate: about 3 s for 5 KB at 50 kbps.
 FOVEA_TIMEOUT_US = 4_000_000
 # Sent the moment they are captured, so their delay is the link's delay.
 CONTROL_TYPES = {MsgType.TELEMETRY, MsgType.TRACKS}
+# A frame number this far below the held one means the UAV started again (or the held one was
+# forged): it replaces the held one instead of being ignored as old.
+RESTART_FRAMES = 10 * config.FPS
+
+USED, OLD, BAD = "used", "old", "bad"
+
+
+def _newer(frame, held):
+    return held is None or frame >= held or held - frame > RESTART_FRAMES
+
+
+def _restarted(frame, held):
+    return held is not None and held - frame > RESTART_FRAMES
 
 
 @dataclass
@@ -82,11 +95,12 @@ class GroundStation:
                       "baseline": LinkReceiver()}
 
         self.telemetry = None           # newest TelemetryMsg
-        self.tracks_frame = -1
+        self.tracks_frame = None
         self.tracks = []                # newest list of TrackBox
         self.keyframe = None            # newest Keyframe
         self.patches = {}               # track id -> newest Patch
         self.full_frame = None          # newest FullFrameMsg (decoded only when shown)
+        self._baseline_decoded = (None, None)   # (frame, image)
         self.bad_messages = 0           # complete messages that did not decode
         self.first_fovea_s = None
         self.link_rate = {name: RateMeter() for name in self.sockets}       # bytes per second
@@ -125,8 +139,10 @@ class GroundStation:
         except ValueError:
             self.bad_messages += 1
             return
-        if not self._apply(message.type, body):
+        result = self._apply(message.type, body)
+        if result == BAD:
             self.bad_messages += 1
+        if result != USED:
             return
         self.message_rate[message.type].add(now_s)
         if self.measurement.active:
@@ -136,36 +152,68 @@ class GroundStation:
                 self.measurement.frames[message.type].add(frame)
 
     def _apply(self, msg_type, body):
-        """Keeps the body if it is newer than what is held; False if it is unusable."""
+        """Keeps the body if it is newer than what is held: USED, OLD (ignored) or BAD."""
         if msg_type == MsgType.TELEMETRY:
-            if self.telemetry is None or body.frame >= self.telemetry.frame:
-                self.telemetry = body
+            held = self.telemetry.frame if self.telemetry else None
+            if not _newer(body.frame, held):
+                return OLD
+            if _restarted(body.frame, held):
+                self._forget()
+            self.telemetry = body
         elif msg_type == MsgType.TRACKS:
             frame, tracks = body
-            if frame >= self.tracks_frame:
-                self.tracks_frame, self.tracks = frame, tracks
-                ids = {t.id for t in tracks}
-                self.patches = {tid: p for tid, p in self.patches.items() if tid in ids}
+            if not _newer(frame, self.tracks_frame):
+                return OLD
+            if _restarted(frame, self.tracks_frame):
+                self._forget()
+            self.tracks_frame, self.tracks = frame, tracks
+            ids = {t.id for t in tracks}
+            self.patches = {tid: p for tid, p in self.patches.items() if tid in ids}
         elif msg_type == MsgType.ROI_PATCH:
             x1, y1, x2, y2 = body.box
             if not (0 <= x1 < x2 <= config.FRAME_WIDTH and 0 <= y1 < y2 <= config.FRAME_HEIGHT):
-                return False
-            image = decode_image(body.image)
-            if image is None or image.shape[:2] != (y2 - y1, x2 - x1):
-                return False
-            old = self.patches.get(body.track_id)
-            if old is None or body.frame >= old.msg.frame:
-                self.patches[body.track_id] = Patch(body, image)
-        elif msg_type == MsgType.BG_KEYFRAME:
-            image = decode_image(body.image, gray=True)
+                return BAD
+            image = decode_image(body.image, size=(x2 - x1, y2 - y1))
             if image is None:
-                return False
-            if self.keyframe is None or body.frame >= self.keyframe.msg.frame:
-                self.keyframe = Keyframe(body, image)
+                return BAD
+            old = self.patches.get(body.track_id)
+            # Only for a track in the newest list (sent just before it), so patches stay bounded.
+            if (body.track_id not in {t.id for t in self.tracks}
+                    or not _newer(body.frame, old.msg.frame if old else None)):
+                return OLD
+            self.patches[body.track_id] = Patch(body, image)
+        elif msg_type == MsgType.BG_KEYFRAME:
+            image = decode_image(body.image, gray=True, size=KEYFRAME_SIZE)
+            if image is None:
+                return BAD
+            if not _newer(body.frame, self.keyframe.msg.frame if self.keyframe else None):
+                return OLD
+            self.keyframe = Keyframe(body, image)
         elif msg_type == MsgType.FULL_FRAME:
-            if self.full_frame is None or body.frame >= self.full_frame.frame:
-                self.full_frame = body
-        return True
+            # Decoded only when shown, but its size is checked now.
+            if image_size(body.image) != (config.FRAME_WIDTH, config.FRAME_HEIGHT):
+                return BAD
+            if not _newer(body.frame, self.full_frame.frame if self.full_frame else None):
+                return OLD
+            self.full_frame = body
+        return USED
+
+    def _forget(self):
+        """Drops the foveated state of an earlier run of the UAV."""
+        self.telemetry = None
+        self.tracks_frame, self.tracks = None, []
+        self.keyframe = None
+        self.patches = {}
+
+    def baseline_image(self):
+        """The newest baseline frame, decoded once, or None."""
+        if self.full_frame is None:
+            return None
+        if self._baseline_decoded[0] != self.full_frame.frame:
+            size = (config.FRAME_WIDTH, config.FRAME_HEIGHT)
+            self._baseline_decoded = (self.full_frame.frame,
+                                      decode_image(self.full_frame.image, size=size))
+        return self._baseline_decoded[1]
 
     def send_report_if_due(self, now_s):
         if self.next_report_s is None:

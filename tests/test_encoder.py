@@ -56,3 +56,31 @@ def test_full_frame_is_jpeg(frame):
 def test_garbage_decodes_to_none():
     assert encoder.decode_image(b"not an image") is None
     assert encoder.decode_image(b"") is None
+
+
+def huge_jpeg(width=65000, height=65000):
+    """A valid 8 x 8 JPEG whose header claims a huge size."""
+    data = bytearray(cv2.imencode(".jpg", np.zeros((8, 8, 3), np.uint8))[1].tobytes())
+    sof = data.index(b"\xff\xc0")
+    data[sof + 5:sof + 9] = height.to_bytes(2, "big") + width.to_bytes(2, "big")
+    return bytes(data)
+
+
+def test_image_size_from_the_header(frame):
+    lossy = cv2.imencode(".webp", frame[:30, :40], [cv2.IMWRITE_WEBP_QUALITY, 70])[1].tobytes()
+    lossless = cv2.imencode(".webp", frame[:30, :40], [cv2.IMWRITE_WEBP_QUALITY, 101])[1].tobytes()
+    assert encoder.image_size(lossy) == (40, 30)
+    assert encoder.image_size(lossless) == (40, 30)
+    assert encoder.image_size(encoder.encode_full_frame(frame)) == (1280, 720)
+    assert encoder.image_size(huge_jpeg()) == (65000, 65000)
+    png = cv2.imencode(".png", frame[:30, :40])[1].tobytes()
+    for data in (b"", b"RIFF", b"\xff\xd8\xff", png, b"x" * 100):
+        assert encoder.image_size(data) is None
+
+
+def test_decode_checks_the_size_before_decoding():
+    # Without the check OpenCV raises for a header over its pixel limit, and decodes anything
+    # below it, however large.
+    assert encoder.decode_image(huge_jpeg(), size=(1280, 720)) is None
+    assert encoder.decode_image(huge_jpeg(8, 8), size=(8, 8)).shape == (8, 8, 3)
+    assert encoder.decode_image(huge_jpeg(8, 8), size=(16, 8)) is None
