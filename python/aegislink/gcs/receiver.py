@@ -114,7 +114,6 @@ class GroundStation:
         self.keyframe = None            # newest Keyframe
         self.patches = {}               # track id -> newest Patch
         self.full_frame = None          # newest FullFrameMsg (decoded only when shown)
-        self._baseline_decoded = (None, None)   # (frame, image)
         self.bad_messages = 0           # complete messages that did not decode
         self.first_fovea_s = None
         self.last_fovea_s = None
@@ -255,16 +254,6 @@ class GroundStation:
             "bad_messages": self.bad_messages,
             "expired": self.links["fovea"].reassembler.stats.expired,
         }
-
-    def baseline_image(self):
-        """The newest baseline frame, decoded once, or None."""
-        if self.full_frame is None:
-            return None
-        if self._baseline_decoded[0] != self.full_frame.frame:
-            size = (config.FRAME_WIDTH, config.FRAME_HEIGHT)
-            self._baseline_decoded = (self.full_frame.frame,
-                                      decode_image(self.full_frame.image, size=size))
-        return self._baseline_decoded[1]
 
     def send_report_if_due(self, now_s):
         if self.next_report_s is None:

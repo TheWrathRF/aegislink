@@ -1,4 +1,4 @@
-"""The ground station's handling of what arrives, and the viewer, without the UAV."""
+"""The ground station's handling of what arrives, without the UAV."""
 
 import socket
 import time
@@ -9,7 +9,7 @@ import pytest
 
 from aegislink._core import MsgType, Packetizer, parse_packet
 from aegislink.common import messages
-from aegislink.gcs import viewer
+from aegislink.gcs import compositor
 from aegislink.gcs.receiver import GroundStation, ReceiverThread
 
 
@@ -109,19 +109,6 @@ def test_reports_go_out_four_times_a_second(station):
     assert first.received == 1 and first.min_delay_us == 0
 
 
-def test_viewer_draws_without_data_and_with_a_patch_at_the_edge(station):
-    image = viewer.compose(station, 1.0)
-    assert image.shape == (viewer.PANE_HEIGHT + viewer.HUD_HEIGHT, 2 * viewer.PANE_WIDTH, 3)
-    track = messages.TrackBox(3, (1270, 700, 1300, 730), True)
-    deliver(station, MsgType.TRACKS, messages.encode_tracks(1, [track]))
-    patch = messages.PatchMsg(1, 150, 0, 3, (1240, 690, 1280, 720), webp(40, 30))
-    deliver(station, MsgType.ROI_PATCH, messages.encode_patch(patch))
-    fovea = viewer.render_fovea(station)
-    # The patch is pasted centred on the track's box, cut at the frame edge.
-    assert tuple(fovea[715, 1279]) == pytest.approx((0, 0, 255), abs=8)
-    assert viewer.compose(station, 1.0).shape == image.shape
-
-
 def test_a_huge_timestamp_does_not_stop_the_reports(station):
     from aegislink._core import Header, encode_packet
     datagram = encode_packet(Header(MsgType.TELEMETRY, 0, 2**64 - 1, 0, 0, 1), b"x")
@@ -152,7 +139,7 @@ def test_images_with_a_wrong_size_are_dropped_before_decoding(station):
         messages.FullFrameMsg(1, bomb)), link="baseline")
     assert station.bad_messages == 4
     assert station.patches == {} and station.keyframe is None and station.full_frame is None
-    viewer.compose(station, 1.0)
+    compositor.render_fovea(station.view(), (640, 360))
 
 
 def test_a_restarted_uav_is_followed(station):

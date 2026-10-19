@@ -10,7 +10,7 @@ readme = "README.md"
 license = "AGPL-3.0-only"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
-dependencies = ["numpy>=2", "opencv-python>=4.10"]
+dependencies = ["numpy>=2", "opencv-python>=4.10", "PyQt6>=6.7", "pyqtgraph>=0.13"]
 
 [project.optional-dependencies]
 test = ["pytest>=8"]
