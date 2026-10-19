@@ -145,7 +145,7 @@ def test_images_with_a_wrong_size_are_dropped_before_decoding(station):
 def test_a_restarted_uav_is_followed(station):
     for frame in (500, 0, 1):
         deliver(station, MsgType.TELEMETRY, messages.encode_telemetry(
-            messages.TelemetryMsg(frame, 0, 0, 0, 0, 0, 0, 0)))
+            messages.TelemetryMsg(frame, 0, 0, 150, 0, 0, 0, 0)))
         deliver(station, MsgType.TRACKS, messages.encode_tracks(frame, []))
     assert station.telemetry.frame == 1 and station.tracks_frame == 1
 
@@ -204,3 +204,36 @@ def test_receiver_thread_receives_reports_and_stops(station):
     finally:
         thread.stop()
     assert not thread.is_alive() and thread.error is None
+
+
+@pytest.mark.parametrize("alt, heading", [
+    (0.0, 0.0), (-5.0, 0.0), (float("nan"), 0.0), (float("inf"), 0.0), (1e30, 0.0),
+    (150.0, float("nan")), (150.0, float("inf")),
+])
+def test_impossible_altitude_or_heading_is_dropped(station, alt, heading):
+    deliver(station, MsgType.TELEMETRY, messages.encode_telemetry(
+        messages.TelemetryMsg(10, 46.0, 7.0, alt, 10, heading, 0, 0)))
+    deliver(station, MsgType.TRACKS, messages.encode_tracks(
+        10, [messages.TrackBox(7, (10, 10, 30, 20), True)]))
+    deliver(station, MsgType.ROI_PATCH, messages.encode_patch(
+        messages.PatchMsg(10, alt, heading, 7, (2, 2, 38, 28), webp(36, 26))))
+    deliver(station, MsgType.BG_KEYFRAME, messages.encode_keyframe(messages.KeyframeMsg(
+        10, alt, heading, cv2.imencode(".webp", np.zeros((270, 480), np.uint8))[1].tobytes())))
+    assert station.bad_messages == 3
+    assert station.telemetry is None and station.patches == {} and station.keyframe is None
+
+
+def test_a_patch_much_larger_than_its_box_is_dropped(station):
+    deliver(station, MsgType.TRACKS, messages.encode_tracks(
+        1, [messages.TrackBox(7, (10, 10, 30, 20), True)]))
+    deliver(station, MsgType.ROI_PATCH, messages.encode_patch(
+        messages.PatchMsg(1, 150, 0, 7, (0, 0, 640, 360), webp(640, 360))))
+    assert station.patches == {} and station.bad_messages == 1
+
+
+def test_snapshot_needs_the_window(tmp_path):
+    import subprocess
+    import sys
+    result = subprocess.run([sys.executable, "-m", "aegislink.gcs.main", "--no-view",
+                             "--snapshot", str(tmp_path / "x.png")], capture_output=True, timeout=30)
+    assert result.returncode == 2

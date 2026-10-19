@@ -5,6 +5,7 @@ the uplink of receiver reports). The deck never waits for the proxy: commands go
 and stats are read whenever they have arrived, so a missing proxy cannot freeze the window.
 """
 
+import math
 import socket
 import time
 
@@ -20,6 +21,15 @@ LINKS = (config.FOVEA_LINK, config.BASELINE_LINK, config.REPORTS_LINK)
 # without a word brings them back (after a restart of the proxy, or a script that took them).
 SILENT_S = 2.0
 RATE_STEPS_KBPS = [0, 15, 25, 50, 100, 250, 500, 1000, 2000, 5000, 20000]   # 0 = no limit
+STATS_KEYS = ("out_kbps", "drop_loss", "drop_queue", "drop_blackout", "blackout_ms")
+
+
+def _finite(pairs):
+    return all(math.isfinite(v) for v in pairs.values())
+
+
+def _valid_stats(stats):
+    return all(all(k in s for k in STATS_KEYS) and _finite(s) for s in stats["links"].values())
 
 
 class ProxyLink:
@@ -55,18 +65,27 @@ class ProxyLink:
         now_s = time.monotonic() if now_s is None else now_s
         while True:
             try:
-                text = self.sock.recv(65535).decode(errors="replace")
+                data, addr = self.sock.recvfrom(65535)
             except BlockingIOError:
                 break
             except OSError:     # Windows: an ICMP "port unreachable" from an earlier send
                 continue
+            if addr != self.addr:
+                continue
+            text = data.decode(errors="replace")
             self.last_heard_s = now_s
+            # Anything that does not parse, or holds a value that is not finite, is ignored.
             try:
                 if text.startswith("stats"):
-                    self.stats = parse_stats(text)
+                    stats = parse_stats(text)
+                    if _valid_stats(stats):
+                        self.stats = stats
                 elif text.startswith("ok"):
                     pairs = parse_pairs(text.removeprefix("ok"))
-                    self.settings[pairs.pop("link")] = pairs
+                    link = pairs.pop("link")
+                    if _finite(pairs):
+                        self.settings[link] = pairs
+                        self.error = None
                 elif text.startswith("error: "):
                     self.error = text.removeprefix("error: ")
             except (ValueError, KeyError, IndexError):
@@ -165,7 +184,7 @@ class EwDeck(QGroupBox):
                 value = min(range(len(RATE_STEPS_KBPS)),
                             key=lambda i: abs(RATE_STEPS_KBPS[i] - value))
             slider.blockSignals(True)
-            slider.setValue(round(value))
+            slider.setValue(round(min(max(value, slider.minimum()), slider.maximum())))
             slider.blockSignals(False)
             self._show(key)
 

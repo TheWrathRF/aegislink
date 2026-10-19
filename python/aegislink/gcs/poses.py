@@ -20,9 +20,13 @@ class PoseHistory:
         self.positions = []     # (east, north) for each frame
 
     def add(self, telemetry):
-        """Adds a telemetry message newer than all held ones (the receiver ignores older ones)."""
-        if self.frames and telemetry.frame <= self.frames[-1]:
+        """Adds a telemetry message. The receiver passes only ones at least as new as the held
+        ones, so an older frame means the UAV started again; the same frame replaces it."""
+        if self.frames and telemetry.frame < self.frames[-1]:
             self.clear()
+        if self.frames and telemetry.frame == self.frames[-1]:
+            self.frames.pop()
+            self.positions.pop()
         if self.origin is None:
             self.origin = (telemetry.lat, telemetry.lon)
         east, north = geo.latlon_to_enu(telemetry.lat, telemetry.lon, self.origin)

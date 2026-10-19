@@ -7,6 +7,7 @@ each frame took; the numbers and plots are refreshed 4 times a second.
 """
 
 import json
+import signal
 import time
 from collections import deque
 
@@ -33,16 +34,19 @@ BACKGROUND = "#15181c"
 
 class FrameClock:
     """Frame times of the draw loop: how long each frame's work took, and the time between frame
-    starts. Keeps the last `window` frames for the display and counts all of them."""
+    starts. Keeps the last `window` frames for the display and the last `keep` (10 minutes at
+    60 Hz) for the summary, and counts all of them."""
 
-    def __init__(self, window=600):
+    def __init__(self, window=600, keep=36000):
         self.work_s = deque(maxlen=window)
         self.interval_s = deque(maxlen=window)
-        self.all_work_s = []
-        self.all_interval_s = []
+        self.all_work_s = deque(maxlen=keep)
+        self.all_interval_s = deque(maxlen=keep)
+        self.frames = 0
         self.last_start_s = None
 
     def record(self, start_s, end_s):
+        self.frames += 1
         self.work_s.append(end_s - start_s)
         self.all_work_s.append(end_s - start_s)
         if self.last_start_s is not None:
@@ -61,7 +65,7 @@ class FrameClock:
 
     def summary(self):
         total = sum(self.all_interval_s)
-        return {"frames": len(self.all_work_s),
+        return {"frames": self.frames,
                 "fps": round(len(self.all_interval_s) / total, 1) if total else None,
                 "work_p95_ms": _round(self._p95_ms(self.all_work_s)),
                 "work_max_ms": _round(max(self.all_work_s, default=0) * 1000),
@@ -143,6 +147,7 @@ class Dashboard(QMainWindow):
         self.proxy = proxy
         self.snapshot = snapshot    # where to save the window as an image when it closes
         self.clock = FrameClock()
+        self.error = None                       # the last exception while drawing
         self._baseline = (None, None)           # (frame, decoded image)
         self._baseline_scaled = (None, None)    # ((frame, size), scaled image)
         self.setWindowTitle("AegisLink ground station")
@@ -228,7 +233,22 @@ class Dashboard(QMainWindow):
             self._baseline_scaled = (key, compositor.render_baseline(self._baseline[1], size))
         return self._baseline_scaled[1]
 
+    # An exception that leaves a Qt slot ends the whole process (PyQt6), so the two timer slots
+    # catch everything and the status line shows it instead.
     def draw_frame(self):
+        try:
+            self._draw_frame()
+        except Exception as e:
+            self.error = e
+
+    def update_status(self):
+        try:
+            self._update_status()
+        except Exception as e:
+            self.error = e
+            self.status.setText(f"error: {e!r}")
+
+    def _draw_frame(self):
         start = time.perf_counter()
         view, full_frame, stats = self.receiver.snapshot()
         self.fovea_view.set_frame(compositor.render_fovea(view, self.fovea_view.render_size()))
@@ -248,7 +268,7 @@ class Dashboard(QMainWindow):
         for key in keys:
             self.curves[key].setData(t, list(self.history[key]))
 
-    def update_status(self):
+    def _update_status(self):
         """Runs every 125 ms and does half of the work in turn: a plot takes a few milliseconds
         to paint, and both in one frame would make the next frame late."""
         stats = getattr(self, "last_stats", None)
@@ -276,6 +296,8 @@ class Dashboard(QMainWindow):
                      f"expired {stats['expired']}")
         if self.receiver.error is not None:
             parts.append(f"receiver stopped: {self.receiver.error!r}")
+        if self.error is not None:
+            parts.append(f"error: {self.error!r}")
         self.status.setText("   |   ".join(parts))
         if self.deck is not None:
             self.deck.update_status()
@@ -304,6 +326,9 @@ def run(station, proxy_port=None, seconds=None, snapshot=None):
     receiver = ReceiverThread(station)
     proxy = ProxyLink(proxy_port) if proxy_port is not None else None
     window = Dashboard(receiver, proxy, snapshot)
+    # Ctrl+C would otherwise raise inside a timer slot and end the process at once, without
+    # stopping the receiver or printing the frame times.
+    previous = signal.signal(signal.SIGINT, lambda *args: app.quit())
     receiver.start()
     try:
         window.show()
@@ -312,6 +337,7 @@ def run(station, proxy_port=None, seconds=None, snapshot=None):
             QTimer.singleShot(round(seconds * 1000), window.close)
         app.exec()
     finally:
+        signal.signal(signal.SIGINT, previous)
         window.frame_timer.stop()
         window.status_timer.stop()
         receiver.stop()

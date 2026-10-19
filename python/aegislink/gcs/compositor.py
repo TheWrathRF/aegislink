@@ -21,6 +21,9 @@ W, H = config.FRAME_WIDTH, config.FRAME_HEIGHT
 # PATCH_PAD (8) around the box, so the vehicle itself stays opaque.
 FEATHER_PX = 6
 GREEN, AMBER = (0, 255, 0), (0, 200, 255)
+# A piece whose camera motion scales it beyond this (an altitude ratio, possible only from bad
+# telemetry) is not drawn: it would be meaningless, and slow to warp.
+MAX_SCALE = 4.0
 
 
 def _scale(sx, sy):
@@ -29,7 +32,8 @@ def _scale(sx, sy):
 
 
 def _motion(view, frame, alt, heading_deg):
-    """3x3 map from pixels of `frame`, seen at `alt` and `heading_deg`, to pixels of the view."""
+    """3x3 map from pixels of `frame`, seen at `alt` and `heading_deg`, to pixels of the view, or
+    None when the motion is not usable (see MAX_SCALE)."""
     t = view.telemetry
     if t is None:
         return np.eye(3)
@@ -37,7 +41,14 @@ def _motion(view, frame, alt, heading_deg):
     pose = view.poses.pose(frame, alt, heading_deg)
     if view_pose is None or pose is None:
         return np.eye(3)
-    return np.vstack([CAMERA.motion_matrix(pose, view_pose), [0, 0, 1.0]])
+    try:
+        m = np.vstack([CAMERA.motion_matrix(pose, view_pose), [0, 0, 1.0]])
+    except (ValueError, np.linalg.LinAlgError):
+        return None
+    scale = np.sqrt(abs(np.linalg.det(m[:2, :2])))
+    if not (np.isfinite(m).all() and 1 / MAX_SCALE <= scale <= MAX_SCALE):
+        return None
+    return m
 
 
 def _apply(m, points):
@@ -52,6 +63,8 @@ def _view_boxes(view):
     # Track lists carry no altitude or heading; they are a frame or two from the view at most,
     # so the view's own are used and only the position changes.
     m = np.eye(3) if t is None else _motion(view, view.tracks_frame, t.alt_m, t.heading_deg)
+    if m is None:
+        return []
     boxes = []
     for track in view.tracks:
         x1, y1, x2, y2 = track.box
@@ -93,7 +106,10 @@ def _paste(canvas, patch, box, view, out):
     """Pastes a patch so that its track's box lands on `box` (view pixels), turned and scaled
     with the camera's motion since the patch was taken."""
     msg = patch.msg
-    a = _motion(view, msg.frame, msg.alt_m, msg.heading_deg)[:2, :2]
+    motion = _motion(view, msg.frame, msg.alt_m, msg.heading_deg)
+    if motion is None:
+        return
+    a = motion[:2, :2]
     x1, y1, x2, y2 = msg.box
     bx1, by1, bx2, by2 = box
     centre_in_crop = np.array([_box_centre_in_crop(x1, x2, bx2 - bx1, W),
@@ -127,10 +143,11 @@ def render_fovea(view, size, boxes=True):
     """The foveated view as a BGR image of `size` (width, height)."""
     w, h = size
     out = _scale(w / W, h / H)
-    if view.keyframe is not None:
-        k = view.keyframe
+    k = view.keyframe
+    motion = None if k is None else _motion(view, k.msg.frame, k.msg.alt_m, k.msg.heading_deg)
+    if motion is not None:
         to_camera = _scale(W / KEYFRAME_SIZE[0], H / KEYFRAME_SIZE[1])
-        m = out @ _motion(view, k.msg.frame, k.msg.alt_m, k.msg.heading_deg) @ to_camera
+        m = out @ motion @ to_camera
         gray = cv2.warpAffine(k.image, m[:2], (w, h), flags=cv2.INTER_LINEAR,
                               borderMode=cv2.BORDER_CONSTANT)
         canvas = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
@@ -144,7 +161,8 @@ def render_fovea(view, size, boxes=True):
             _paste(canvas, patch, box, view, out)
     if boxes:
         for track, box in view_boxes:
-            (x1, y1), (x2, y2) = np.round(_apply(out, [box[:2], box[2:]])).astype(int)
+            corners = np.clip(_apply(out, [box[:2], box[2:]]), -10 * w, 10 * w)
+            (x1, y1), (x2, y2) = np.round(corners).astype(int)
             color = GREEN if track.seen else AMBER
             cv2.rectangle(canvas, (x1 - 2, y1 - 2), (x2 + 2, y2 + 2), color, 2)
             cv2.putText(canvas, str(track.id), (x1, y1 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5,

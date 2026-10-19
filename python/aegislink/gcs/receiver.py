@@ -1,6 +1,7 @@
 """The GCS end of the links: receive both streams, keep the newest of everything, and send the
 receiver reports that set the UAV's budget."""
 
+import math
 import select
 import socket
 import threading
@@ -14,7 +15,7 @@ from aegislink._core import MsgType, Packetizer
 from aegislink.common import config, messages
 from aegislink.common.net import LinkReceiver, RateMeter
 from aegislink.gcs.poses import PoseHistory
-from aegislink.uav.encoder import KEYFRAME_SIZE, decode_image, image_size
+from aegislink.uav.encoder import KEYFRAME_SIZE, PATCH_PAD, decode_image, image_size
 
 REPORT_INTERVAL_S = 0.25
 # A keyframe is paced out at the budget rate: about 3 s for 5 KB at 50 kbps.
@@ -26,10 +27,17 @@ CONTROL_TYPES = {MsgType.TELEMETRY, MsgType.TRACKS}
 RESTART_FRAMES = 10 * config.FPS
 
 USED, OLD, BAD = "used", "old", "bad"
+# Altitudes outside this range (and any value that is not finite) cannot be drawn: the camera
+# model divides by the altitude. They can only come from a broken or forged message.
+MIN_ALT_M, MAX_ALT_M = 1.0, 10_000.0
 
 
 def _newer(frame, held):
     return held is None or frame >= held or held - frame > RESTART_FRAMES
+
+
+def _sane_pose(alt, heading_deg):
+    return MIN_ALT_M <= alt <= MAX_ALT_M and math.isfinite(heading_deg)
 
 
 def _restarted(frame, held):
@@ -176,6 +184,9 @@ class GroundStation:
 
     def _apply(self, msg_type, body):
         """Keeps the body if it is newer than what is held: USED, OLD (ignored) or BAD."""
+        if msg_type in (MsgType.TELEMETRY, MsgType.ROI_PATCH, MsgType.BG_KEYFRAME):
+            if not _sane_pose(body.alt_m, body.heading_deg):
+                return BAD
         if msg_type == MsgType.TELEMETRY:
             held = self.telemetry.frame if self.telemetry else None
             if not _newer(body.frame, held):
@@ -197,6 +208,13 @@ class GroundStation:
             x1, y1, x2, y2 = body.box
             if not (0 <= x1 < x2 <= config.FRAME_WIDTH and 0 <= y1 < y2 <= config.FRAME_HEIGHT):
                 return BAD
+            # A patch is its box padded by PATCH_PAD; one much larger costs time on every frame.
+            track = next((t for t in self.tracks if t.id == body.track_id), None)
+            if track is not None:
+                bx1, by1, bx2, by2 = track.box
+                if (x2 - x1 > 2 * (bx2 - bx1) + 2 * PATCH_PAD + 32
+                        or y2 - y1 > 2 * (by2 - by1) + 2 * PATCH_PAD + 32):
+                    return BAD
             image = decode_image(body.image, size=(x2 - x1, y2 - y1))
             if image is None:
                 return BAD

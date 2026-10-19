@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
-# Qt needs system libraries that a bare Linux machine may lack; the window is not tested there.
+# Qt needs system libraries that a bare Linux machine may lack; there these tests are skipped.
 pytest.importorskip("PyQt6.QtWidgets")
 pytest.importorskip("pyqtgraph")
 
@@ -228,3 +228,90 @@ def test_rate_slider_starves_the_baseline_while_tracks_keep_coming(app, proxy, t
     s = window.clock.summary()
     assert s["fps"] >= 55 and s["work_p95_ms"] < 1000 / 60
 
+
+
+class FakeProxy:
+    """Something on the proxy's port that answers with whatever the test wants."""
+
+    def __init__(self):
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.bind(("127.0.0.1", 0))
+        self.sock.settimeout(1.0)
+        self.port = self.sock.getsockname()[1]
+
+    def answer(self, text):
+        _, addr = self.sock.recvfrom(65535)
+        self.sock.sendto(text.encode(), addr)
+        return addr
+
+
+@pytest.mark.parametrize("reply", [
+    "ok link=1 loss_pct=nan", "ok link=1 loss_pct=inf", "ok link=1 loss_pct=1e12 kbps=-5",
+    "stats uptime_ms=1\nlink=1 foo=2", "stats uptime_ms=1\nlink=1 out_kbps=nan", "garbage=",
+])
+def test_deck_survives_bad_replies(app, reply):
+    fake = FakeProxy()
+    deck = EwDeck(ProxyLink(fake.port))
+    deck.update_status()            # asks the proxy for its settings
+    fake.answer(reply)
+    time.sleep(0.05)
+    deck.update_status()
+    for key, slider in deck.sliders.items():
+        assert slider.minimum() <= slider.value() <= slider.maximum()
+    deck.proxy.close()
+    fake.sock.close()
+
+
+def test_deck_ignores_datagrams_from_others(app):
+    fake = FakeProxy()
+    deck = EwDeck(ProxyLink(fake.port))
+    deck.update_status()
+    fake.sock.recvfrom(65535)
+    other = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    other.sendto(b"ok link=1 loss_pct=40", deck.proxy.sock.getsockname())
+    time.sleep(0.05)
+    deck.update_status()
+    assert deck.proxy.settings == {} and deck.setting("loss_pct") == 0
+    other.close()
+    deck.proxy.close()
+    fake.sock.close()
+
+
+def test_an_error_while_drawing_is_shown_not_fatal(app, station, monkeypatch):
+    window = Dashboard(ReceiverThread(station))
+    def broken(*args, **kwargs):
+        raise ValueError("broken view")
+    monkeypatch.setattr("aegislink.gcs.compositor.render_fovea", broken)
+    window.draw_frame()             # raised out of a Qt slot, this would end the process
+    monkeypatch.undo()
+    window.draw_frame()
+    window.update_status()
+    window.update_status()
+    assert "broken view" in window.status.text()
+    window.close()
+
+
+def test_frame_clock_memory_is_bounded():
+    clock = FrameClock(window=10, keep=100)
+    for i in range(1000):
+        clock.record(i * 0.016, i * 0.016 + 0.002)
+    assert len(clock.all_work_s) == 100 and clock.summary()["frames"] == 1000
+
+
+def test_ctrl_c_closes_the_window_cleanly():
+    script = (
+        "import signal, socket\n"
+        "from PyQt6.QtCore import QTimer\n"
+        "from PyQt6.QtWidgets import QApplication\n"
+        "app = QApplication([])\n"
+        "from aegislink.gcs import dashboard\n"
+        "from aegislink.gcs.receiver import GroundStation\n"
+        "r = socket.socket(socket.AF_INET, socket.SOCK_DGRAM); r.bind(('127.0.0.1', 0))\n"
+        "station = GroundStation(0, 0, r.getsockname()[1])\n"
+        "QTimer.singleShot(500, lambda: signal.raise_signal(signal.SIGINT))\n"
+        "dashboard.run(station)\n")
+    env = dict(os.environ, QT_QPA_PLATFORM="offscreen")
+    result = subprocess.run([sys.executable, "-c", script], capture_output=True, text=True,
+                            timeout=30, env=env)
+    assert result.returncode == 0, result.stderr
+    assert "frame_times" in result.stdout

@@ -64,6 +64,8 @@ def main():
     args = parser.parse_args()
     if args.summary and not args.no_view:
         parser.error("--summary needs --no-view")
+    if args.snapshot and args.no_view:
+        parser.error("--snapshot needs the window")
     report_port = args.report_port or (config.REPORTS_TO_UAV if args.direct
                                        else config.REPORTS_TO_PROXY)
     station = GroundStation(args.fovea_port, args.baseline_port, report_port)
