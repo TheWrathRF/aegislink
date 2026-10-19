@@ -5,13 +5,14 @@ import select
 import socket
 import time
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 
 from aegislink._core import MsgType, Packetizer
 from aegislink.common import config, messages
 from aegislink.common.net import LinkReceiver, RateMeter
+from aegislink.gcs.poses import PoseHistory
 from aegislink.uav.encoder import KEYFRAME_SIZE, decode_image, image_size
 
 REPORT_INTERVAL_S = 0.25
@@ -44,6 +45,17 @@ class Patch:
 class Keyframe:
     msg: messages.KeyframeMsg
     image: np.ndarray       # gray, downscaled
+
+
+@dataclass
+class View:
+    """What the station held at one moment: everything the foveated view is drawn from."""
+    telemetry: messages.TelemetryMsg | None
+    tracks_frame: int | None
+    tracks: list
+    keyframe: Keyframe | None
+    patches: dict               # track id -> Patch
+    poses: PoseHistory = field(default_factory=PoseHistory)
 
 
 class Measurement:
@@ -95,6 +107,7 @@ class GroundStation:
                       "baseline": LinkReceiver()}
 
         self.telemetry = None           # newest TelemetryMsg
+        self.poses = PoseHistory()      # positions of the recent frames
         self.tracks_frame = None
         self.tracks = []                # newest list of TrackBox
         self.keyframe = None            # newest Keyframe
@@ -160,6 +173,7 @@ class GroundStation:
             if _restarted(body.frame, held):
                 self._forget()
             self.telemetry = body
+            self.poses.add(body)
         elif msg_type == MsgType.TRACKS:
             frame, tracks = body
             if not _newer(frame, self.tracks_frame):
@@ -201,9 +215,15 @@ class GroundStation:
     def _forget(self):
         """Drops the foveated state of an earlier run of the UAV."""
         self.telemetry = None
+        self.poses.clear()
         self.tracks_frame, self.tracks = None, []
         self.keyframe = None
         self.patches = {}
+
+    def view(self):
+        """A copy of what the foveated view needs, safe to draw from while receiving goes on."""
+        return View(self.telemetry, self.tracks_frame, list(self.tracks), self.keyframe,
+                    dict(self.patches), self.poses.copy())
 
     def baseline_image(self):
         """The newest baseline frame, decoded once, or None."""

@@ -49,6 +49,19 @@ def test_keeps_the_newest_telemetry_and_tracks(station):
     assert station.tracks_frame == 10 and len(station.tracks) == 1
 
 
+def test_view_holds_the_positions_of_recent_frames_until_a_restart(station):
+    for frame, lat in ((400, 46.0), (401, 46.0001)):
+        deliver(station, MsgType.TELEMETRY, messages.encode_telemetry(
+            messages.TelemetryMsg(frame, lat, 7.0, 150, 10, 0, 0, 0)))
+    view = station.view()
+    assert view.telemetry.frame == 401 and view.tracks == [] and view.patches == {}
+    assert view.poses.position(401) == pytest.approx((0.0, 11.13), abs=0.01)
+    deliver(station, MsgType.TELEMETRY, messages.encode_telemetry(
+        messages.TelemetryMsg(0, 46.0, 7.0, 150, 10, 0, 0, 0)))     # the UAV started again
+    assert station.view().poses.position(401) is None
+    assert view.poses.position(401) is not None     # the earlier view is a copy
+
+
 def test_patch_is_kept_and_dropped_with_its_track(station):
     track = messages.TrackBox(7, (10, 10, 30, 20), True)
     deliver(station, MsgType.TRACKS, messages.encode_tracks(1, [track]))
