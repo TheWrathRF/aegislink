@@ -158,8 +158,9 @@ Without the proxy: `--direct` on both nodes.
   fatal; the kept frame times are bounded; Ctrl+C closes the window cleanly (a subprocess that
   raises SIGINT exits 0 and prints its frame times). A live run (UAV process, proxy, this window, about
   20 s): on a clean link both streams arrive, then the deck's rate slider at 50 kbps stops the
-  baseline while tracks keep arriving at over 28 per second, and the window holds 55 frames per
-  second or more.
+  baseline while tracks keep arriving at over 28 per second, and the draw loop does not stall
+  (30 frames per second or more: with the UAV and the proxy on the same machine the rate depends
+  on the machine).
 - `tests/test_demo.py`: `run_demo` for 8 s (window offscreen) exits cleanly, draws over 300
   frames, receives tracks and baseline frames, and saves its snapshot. About 10 s.
 - `tests/test_stream.py`: the UAV, the proxy and the GCS as three processes, measured by the
