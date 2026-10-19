@@ -16,7 +16,8 @@ used from Python through pybind11 (`aegislink._core`).
   metres to latitude/longitude; `tools/loopback_check.py` sends messages over loopback UDP and
   checks that they arrive intact; `tools/link_meter.py` measures a proxy link; `uav/` is the UAV
   side (synthetic world, camera, flight, detector, tracker, encoder, scheduler, streamer);
-  `gcs/` the ground station (receiver, viewer).
+  `gcs/` the ground station (receiver, poses, compositor, dashboard, EW deck);
+  `tools/run_demo.py` starts the proxy, the ground station and the UAV together.
 - `tests/`: pytest.
 - One `CMakeLists.txt` builds the C++ tests and the proxy (plain CMake), and the Python module
   plus the proxy when scikit-build-core runs it (`SKBUILD` is set, the tests are skipped, and the
@@ -281,7 +282,7 @@ reads receiver reports from its own socket. Sending and receiving use separate s
 on Windows a send to a closed port makes the next receive on the same socket fail.
 
 ## Ground station (`gcs/`)
-`python -m aegislink.gcs.main [--no-view] [--seconds S] [--warmup S] [--summary] [--snapshot PNG] [--direct]`
+`python -m aegislink.gcs.main [--no-view] [--seconds S] [--warmup S] [--summary] [--snapshot PNG] [--direct] [--proxy-control PORT]`
 
 - `GroundStation` (`gcs/receiver.py`) reads both links with `select()` and one `LinkReceiver`
   each. The foveated link's reassembler waits 4 s (a paced keyframe takes about 3 s at 50
@@ -294,13 +295,76 @@ on Windows a send to a closed port makes the next receive on the same socket fai
 - Images must have their expected size in their header before they are decoded: a patch the
   size of its box (inside the image), a keyframe 480 x 270, a baseline frame 1280 x 720 (checked
   on arrival, decoded once when first shown). Anything else, and any body that does not decode,
-  is counted in `bad_messages` and dropped.
+  is counted in `bad_messages` and dropped. So are telemetry and images with an altitude
+  outside 1-10,000 m or a heading that is not finite (the camera model divides by the altitude),
+  and a patch more than twice the size of its track's box plus the pad (each patch is warped
+  on every drawn frame).
 - Every 250 ms it sends a receiver report for link 1 to the UAV.
-- The viewer (`gcs/viewer.py`, 30 Hz, OpenCV) shows the baseline and the foveated view side by
-  side at half size with the received kbps and message rates. The foveated view is the newest
-  keyframe scaled up, with each track's newest patch pasted centred on the track's newest box;
-  the keyframe is not moved with the camera, so it slides out of line until the next one.
-- `--summary` prints one JSON line about the `--seconds` after `--warmup` seconds from the first
-  foveated datagram: kbps per link and their ratio, telemetry and track messages per second
-  and the share of frames that arrived, patches per second, keyframes, baseline frames per
-  second, bad packets and messages, expired partial messages.
+- `PoseHistory` (`gcs/poses.py`) keeps the UAV's position for the last 300 telemetry messages
+  (10 s at 30 Hz) by frame number, in metres east/north of the first telemetry received, interpolated between
+  frames whose telemetry was lost. Images carry altitude and heading but no position, so the
+  compositor looks the position up here.
+- With `--no-view` the station runs in one loop and `--summary` prints one JSON line about the
+  `--seconds` after `--warmup` seconds from the first foveated datagram: kbps per link and their
+  ratio, telemetry and track messages per second and the share of frames that arrived, patches
+  per second, keyframes, baseline frames per second, bad packets and messages, expired partial
+  messages.
+
+### Compositor (`gcs/compositor.py`)
+Every piece arrives in the pixels of the frame it was captured in, and the view is drawn from
+the camera pose of the newest telemetry. Each piece is mapped into it with
+`NadirCamera.motion_matrix` between the two poses (a nadir camera over flat ground: one affine
+map). Without a known position for either frame, a piece is not moved; a piece that the motion
+would scale by more than 4 (or less than 1/4) is not drawn.
+
+- **Background**: the keyframe (480 x 270 gray) is scaled to the camera's size, moved by the
+  camera's motion since it was taken and scaled to the view, in one `warpAffine`. Where the
+  keyframe does not reach, the view is black.
+- **Track boxes** are moved from their frame to the view's (usually the same frame; the track
+  list carries no heading, so only the position change is used).
+- **Patches**: each track's newest patch is turned and scaled by the camera's motion since it was
+  taken and placed so that its track's box lands on the newest box: the target moves at the track
+  rate (30 Hz) even when its patch is older. A crop cut at the image edge is placed by its uncut
+  side, which lies 8 px (the pad) from the box. The patch's border fades into the background over
+  6 px, inside the pad, so the vehicle stays opaque.
+- Boxes are drawn green when matched in their frame, amber while coasting, with their ids.
+
+### Dashboard (`gcs/dashboard.py`, `gcs/ew_deck.py`)
+- PyQt6 with a dark Fusion palette and pyqtgraph plots. Top: the baseline and the foveated view
+  side by side, each with its numbers below (kbps and frames per second; kbps, share of the
+  baseline, telemetry, track and patch rates, keyframe age). Bottom: the EW deck, received kbps
+  (log scale) and messages per second over the last minute, and a status line.
+- `ReceiverThread` runs the station in its own thread: it waits for datagrams without the lock,
+  then handles them and sends reports under it. The window reads the station only through
+  `snapshot()` (a copy of the view's inputs, the newest baseline message and the numbers), so
+  drawing never holds up receiving.
+- A 16 ms precise timer draws a frame: snapshot, compose the foveated view at the widget's size
+  (at most 1280 x 720), decode the baseline JPEG once per frame and scale it, and paint both
+  views at once (`repaint`). `FrameClock` records each frame's work time and the interval
+  between frame starts; the status line shows their 95th percentiles, and when the window closes
+  they are printed as one JSON line with the last second's numbers.
+- Every 125 ms half of the numbers and one of the two plots are refreshed, in turn: a plot takes
+  3-5 ms to paint, and both in one frame made the next frame late.
+- No foveated datagram for 0.5 s: the view shows LINK LOST and how long.
+- In PyQt6 an exception that leaves a Qt slot ends the process, so the two timer slots catch
+  everything and show it in the status line. Ctrl+C quits the event loop (a SIGINT handler), so
+  the receiver stops and the frame times are still printed. The frame times of the last 10
+  minutes are kept for that summary.
+- **EW deck**: sliders for packet loss (0-60 %), mean burst length (1-20), rate limit (off, 15 to
+  20,000 kbps in steps), delay (0-300 ms) and jitter (0-200 ms), a timed blackout and Clear.
+  Every change goes to all three links: the jammer hits the radio channel both ways, so a
+  blackout also silences the receiver reports and the UAV holds its budget.
+- `ProxyLink` never waits for the proxy: commands go out on a non-blocking socket, and replies
+  and stats are read whenever they have arrived. Datagrams from any other address, and replies
+  or stats that do not parse or hold a value that is not finite, are ignored; synced slider
+  values are clamped to the slider's range. On the first reply (and the first after a
+  silence) the sliders move to the proxy's settings. Without a word for 2 s it asks again, which also takes the stats back from a
+  script that sent a command in between. The deck shows each link's output rate and drops by
+  cause from the proxy's stats.
+
+## Demo (`tools/run_demo.py`)
+`python -m aegislink.tools.run_demo [--seed N] [--seconds S] [--snapshot PNG] [--log PATH] [--base-port P]`
+
+Starts `ew_chaos_proxy` with the three links, waits until it answers, then the ground station
+window and the UAV (`--send`, real time). When the window closes it stops the UAV and the proxy.
+The ports are the defaults (5600-5605, control 5700) or the same layout from `--base-port`.

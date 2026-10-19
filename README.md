@@ -29,7 +29,15 @@ Work in progress. So far it has:
   10 s: on a clean link the foveated stream used 100.6 kbps against 14,908 kbps for the baseline
   (0.67 %); with both links limited to 50 kbps, the telemetry and boxes of every frame arrived
   (30 per second) with about 5 patches per second, while not one baseline frame got through.
-  A minimal OpenCV viewer shows both streams side by side.
+- **A ground station dashboard** (PyQt6 and pyqtgraph) with the baseline and the foveated stream
+  side by side. The foveated view is rebuilt from what arrived: the last gray background, moved
+  and turned with the camera since it was taken, with each vehicle's newest colour patch blended
+  onto its newest track box. Below them: bitrates, message rates and the background's age,
+  plots of the last minute, and an EW deck whose sliders set loss, burst length, rate limit,
+  delay, jitter and timed blackouts on the proxy while the link runs. In a 30 s demo run on the
+  development PC it drew 62 frames per second with a frame time of 4.5 ms at the 95th
+  percentile; after the links were limited to 50 kbps, the boxes kept arriving 30 times a
+  second while the baseline froze.
 
 ## Build and test
 
@@ -56,7 +64,14 @@ To watch the UAV simulation with its tracked boxes (it also writes the ground tr
 python -m aegislink.uav.main
 ```
 
-To stream it through the proxy to the ground station viewer, run each in its own terminal:
+To run the whole demo, the proxy, the ground station window and the UAV, in one command (closing
+the window stops all three):
+
+```
+python -m aegislink.tools.run_demo
+```
+
+Or each in its own terminal:
 
 ```
 ew_chaos_proxy --link 5600:5601 --link 5602:5603 --link 5604:5605 --control 5700
