@@ -1,24 +1,20 @@
 """ew_chaos_proxy as a real process, driven over real UDP sockets on 127.0.0.1."""
 
-import shutil
 import socket
 import subprocess
-import sysconfig
 import time
 from dataclasses import dataclass
 
 import pytest
 
 from aegislink.common.proxy_control import ProxyControl, ProxyError
-from aegislink.tools import link_meter
+from aegislink.tools import link_meter, run_demo
 
 CLEAN = dict(loss_pct=0, burst=1, kbps=0, queue_ms=250, delay_ms=0, jitter_ms=0, blackout_ms=0)
 
 
 def find_proxy():
-    # pip installs the proxy next to the Python scripts, which may not be on PATH (no venv activated).
-    name = "ew_chaos_proxy"
-    path = shutil.which(name, path=sysconfig.get_path("scripts")) or shutil.which(name)
+    path = run_demo.find_proxy()
     if path is None:
         pytest.fail("ew_chaos_proxy not found: run 'python -m pip install -e .' first")
     return path
