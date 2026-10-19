@@ -1,6 +1,7 @@
 """The ground station's handling of what arrives, and the viewer, without the UAV."""
 
 import socket
+import time
 
 import cv2
 import numpy as np
@@ -9,7 +10,7 @@ import pytest
 from aegislink._core import MsgType, Packetizer, parse_packet
 from aegislink.common import messages
 from aegislink.gcs import viewer
-from aegislink.gcs.receiver import GroundStation
+from aegislink.gcs.receiver import GroundStation, ReceiverThread
 
 
 @pytest.fixture
@@ -176,3 +177,43 @@ def test_older_messages_are_not_counted_and_patches_need_a_track(station):
     patch = messages.PatchMsg(10, 150, 0, 7, (2, 2, 38, 28), webp(36, 26))
     deliver(station, MsgType.ROI_PATCH, messages.encode_patch(patch))
     assert station.patches == {}
+
+
+def test_stats_sum_up_what_arrived(station):
+    assert station.stats(1.0)["fovea_silent_s"] is None
+    deliver(station, MsgType.TELEMETRY, messages.encode_telemetry(
+        messages.TelemetryMsg(60, 46.0, 7.0, 150, 10, 0, 0, 0)), now_s=1.0)
+    deliver(station, MsgType.BG_KEYFRAME, messages.encode_keyframe(messages.KeyframeMsg(
+        30, 150, 0, cv2.imencode(".webp", np.zeros((270, 480), np.uint8))[1].tobytes())),
+        now_s=1.2)
+    deliver(station, MsgType.TELEMETRY, b"short", now_s=1.3)
+    s = station.stats(1.5)
+    assert s["keyframe_age_s"] == pytest.approx(1.0)
+    assert s["fovea_silent_s"] == pytest.approx(0.2)
+    assert s["telemetry_hz"] == 1 and s["bad_messages"] == 1
+    assert s["fovea_kbps"] > 0 and s["baseline_kbps"] == 0
+
+
+def test_receiver_thread_receives_reports_and_stops(station):
+    thread = ReceiverThread(station)
+    thread.start()
+    try:
+        port = station.sockets["fovea"].getsockname()[1]
+        sender = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        tx = Packetizer()
+        body = messages.encode_tracks(5, [messages.TrackBox(2, (10, 10, 40, 30), True)])
+        for datagram in tx.packetize(MsgType.TRACKS, 0, body):
+            sender.sendto(datagram, ("127.0.0.1", port))
+        sender.close()
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            view, full_frame, stats = thread.snapshot()
+            if view.tracks:
+                break
+            time.sleep(0.01)
+        assert view.tracks_frame == 5 and view.tracks[0].id == 2
+        assert full_frame is None and stats["tracks_hz"] >= 1
+        assert parse_packet(station.reports.recv(2048)).header.type == MsgType.RECEIVER_REPORT
+    finally:
+        thread.stop()
+    assert not thread.is_alive() and thread.error is None

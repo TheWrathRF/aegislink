@@ -3,6 +3,7 @@ receiver reports that set the UAV's budget."""
 
 import select
 import socket
+import threading
 import time
 from collections import Counter
 from dataclasses import dataclass, field
@@ -116,6 +117,7 @@ class GroundStation:
         self._baseline_decoded = (None, None)   # (frame, image)
         self.bad_messages = 0           # complete messages that did not decode
         self.first_fovea_s = None
+        self.last_fovea_s = None
         self.link_rate = {name: RateMeter() for name in self.sockets}       # bytes per second
         self.message_rate = {t: RateMeter() for t in MsgType}               # messages per second
         self.measurement = Measurement()
@@ -127,7 +129,14 @@ class GroundStation:
 
     def poll(self, timeout_s):
         """Waits up to `timeout_s` for datagrams and handles all that are waiting."""
+        self.read(self.wait(timeout_s))
+
+    def wait(self, timeout_s):
+        """Waits up to `timeout_s` for datagrams; returns the sockets that have some."""
         readable, _, _ = select.select(list(self.sockets.values()), [], [], timeout_s)
+        return readable
+
+    def read(self, readable):
         for name, s in self.sockets.items():
             if s not in readable:
                 continue
@@ -139,8 +148,10 @@ class GroundStation:
                 self._receive(name, datagram, time.monotonic())
 
     def _receive(self, name, datagram, now_s):
-        if name == "fovea" and self.first_fovea_s is None:
-            self.first_fovea_s = now_s
+        if name == "fovea":
+            if self.first_fovea_s is None:
+                self.first_fovea_s = now_s
+            self.last_fovea_s = now_s
         self.link_rate[name].add(now_s, len(datagram))
         if self.measurement.active:
             self.measurement.bytes[name] += len(datagram)
@@ -225,6 +236,26 @@ class GroundStation:
         return View(self.telemetry, self.tracks_frame, list(self.tracks), self.keyframe,
                     dict(self.patches), self.poses.copy())
 
+    def stats(self, now_s):
+        """The numbers the dashboard shows: rates over the last second, and ages."""
+        rate = {t: self.message_rate[t].rate(now_s) for t in MsgType}
+        keyframe_age = None
+        if self.keyframe is not None and self.telemetry is not None:
+            keyframe_age = max(0, self.telemetry.frame - self.keyframe.msg.frame) / config.FPS
+        return {
+            "fovea_kbps": self.link_rate["fovea"].rate(now_s) * 8 / 1000,
+            "baseline_kbps": self.link_rate["baseline"].rate(now_s) * 8 / 1000,
+            "telemetry_hz": rate[MsgType.TELEMETRY],
+            "tracks_hz": rate[MsgType.TRACKS],
+            "patches_per_s": rate[MsgType.ROI_PATCH],
+            "baseline_fps": rate[MsgType.FULL_FRAME],
+            "keyframe_age_s": keyframe_age,
+            "fovea_silent_s": None if self.last_fovea_s is None else now_s - self.last_fovea_s,
+            "bad_packets": self.links["fovea"].bad + self.links["baseline"].bad,
+            "bad_messages": self.bad_messages,
+            "expired": self.links["fovea"].reassembler.stats.expired,
+        }
+
     def baseline_image(self):
         """The newest baseline frame, decoded once, or None."""
         if self.full_frame is None:
@@ -247,3 +278,42 @@ class GroundStation:
         body = messages.encode_report(self.links["fovea"].report(now_us))
         for datagram in self.report_packetizer.packetize(MsgType.RECEIVER_REPORT, now_us, body):
             self.report_tx.sendto(datagram, self.report_addr)
+
+
+class ReceiverThread:
+    """Runs a GroundStation in its own thread, so that drawing never holds up receiving or the
+    receiver reports. The UI reads the station only through `snapshot`, under the same lock."""
+
+    def __init__(self, station, poll_s=0.005):
+        self.station = station
+        self.poll_s = poll_s
+        self.lock = threading.Lock()
+        self.error = None           # the exception that stopped the thread, if any
+        self._stopping = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="gcs-receiver", daemon=True)
+
+    def start(self):
+        self._thread.start()
+
+    def stop(self):
+        self._stopping.set()
+        self._thread.join(timeout=2.0)
+
+    def is_alive(self):
+        return self._thread.is_alive()
+
+    def _run(self):
+        try:
+            while not self._stopping.is_set():
+                readable = self.station.wait(self.poll_s)     # without the lock
+                with self.lock:
+                    self.station.read(readable)
+                    self.station.send_report_if_due(time.monotonic())
+        except Exception as e:      # shown by the UI instead of dying silently
+            self.error = e
+
+    def snapshot(self):
+        """(View, newest FullFrameMsg or None, stats) as of now."""
+        with self.lock:
+            s = self.station
+            return s.view(), s.full_frame, s.stats(time.monotonic())
