@@ -17,7 +17,8 @@ ground station follows its tracks with.
   metres to latitude/longitude; `tools/loopback_check.py` sends messages over loopback UDP and
   checks that they arrive intact; `tools/link_meter.py` measures a proxy link; `uav/` is the UAV
   side (synthetic world, camera, flight, detector, tracker, encoder, scheduler, streamer);
-  `gcs/` the ground station (receiver, poses, ghost tracks, compositor, dashboard, EW deck);
+  `gcs/` the ground station (receiver, poses, ghost tracks, GPS spoofing check, compositor,
+  dashboard, EW deck);
   `tools/run_demo.py` starts the proxy, the ground station and the UAV together;
   `tools/run_scenario.py` runs a scripted timeline from `scenarios/`, and `tools/evaluate.py`
   scores the station's tracks against the ground truth.
@@ -71,7 +72,7 @@ datagram stays under the 1280-byte IPv6 minimum MTU and is never IP-fragmented.
 
 - Each `--link` is one direction of the radio link: it receives on `127.0.0.1:LISTEN` and sends
   on to `127.0.0.1:FORWARD`, from the same socket. Links are numbered from 1 in the order given.
-  The proxy does not parse the datagrams.
+  The proxy parses a datagram only to spoof it (below).
 - One thread runs one `select()` loop over all sockets. A received datagram goes through its
   link (`Link::admit`); a forwarded one waits in a priority queue ordered by release time (ties
   keep arrival order), and the loop sleeps until the next release, stats report or datagram.
@@ -87,16 +88,28 @@ datagram stays under the 1280-byte IPv6 minimum MTU and is never IP-fragmented.
      wait longer than `queue_ms` is dropped (drop-tail). The bucket is replaced (full) only when
      the rate changes.
   4. **Delay and jitter**: `delay_ms` plus a uniform extra in `[0, jitter_ms)`; jitter can reorder.
+- **GPS spoofing** (`Spoofer`, one per link): a man-in-the-middle on the telemetry. A forwarded
+  datagram that parses as a whole, unfragmented TELEMETRY packet with a 32-byte body gets its
+  latitude and longitude moved by an offset along a bearing (the same flat-earth model as
+  `common/geo.py`), and is encoded again with a new CRC, so the receiver accepts it: the CRC
+  detects noise, not an attacker (a real link would need a message authentication code).
+  The offset is `spoof_offset_m` at the moment it is set (a jump) plus `spoof_drift_mps` times
+  the time since (a drift), along `spoof_bearing_deg` (0 = north, 90 = east). A command that
+  changes a spoof key starts again from the offset reached by then, so stopping a drift keeps
+  the offset; an offset of 0 with no drift ends the spoofing. Only the foveated link carries
+  telemetry; on the others it changes nothing.
 - Each link has its own random generator, seeded with `seed + index`, and draws doubles from the
   top 53 bits, so a seed gives the same fates with any compiler.
 - **Control** (`control.hpp`): one text command per datagram, for example
-  `link=1 loss_pct=30 burst=4 kbps=50 queue_ms=250 delay_ms=20 jitter_ms=10 blackout_ms=5000`.
+  `link=1 loss_pct=30 burst=4 kbps=50 queue_ms=250 delay_ms=20 jitter_ms=10 blackout_ms=5000`,
+  or `link=1 spoof_drift_mps=3 spoof_bearing_deg=90 spoof_offset_m=0`.
   Every key but `link` is optional. The reply is `ok` and all of the link's settings in the same
   form (`blackout_ms` is the time left), or `error: <reason>` with nothing changed: the command
   is applied to a copy of the link first.
 - **Stats**: every 250 ms, to the port that sent the last command:
   `stats uptime_ms=N`, then per link `link=1 in= out= drop_blackout= drop_loss= drop_queue=
-  send_errors= in_kbps= out_kbps= blackout_ms=` (rates over the last interval, in datagram bytes).
+  send_errors= in_kbps= out_kbps= blackout_ms= spoofed= spoof_offset_m=` (rates over the last
+  interval, in datagram bytes; `spoofed` counts the changed packets).
 - `UdpSocket` wraps Winsock2 and POSIX sockets: bound to 127.0.0.1, non-blocking, 4 MB buffers.
   `receive` skips failed reads, because on Windows a send to a closed port makes the ICMP reply
   show up as an error on the next read.
@@ -271,7 +284,8 @@ Every decoder checks the length first and raises `ValueError`.
    image in that frame, so that images never take the tokens they are waiting for.
 3. **One image message at a time**, chosen by how overdue it is: `age / interval`, where a patch
    of a track matched this frame has an interval of 0.1 s (10 Hz) and the keyframe an interval of
-   1 s, stretched so that keyframes use at most 15 % of the budget. The most overdue image is
+   0.5 s (the GPS check works on pairs of keyframes), stretched so that keyframes use at most
+   15 % of the budget. The most overdue image is
    encoded and its datagrams go out as the tokens allow, over several frames if needed; nothing
    else is started until it is done.
 4. **Datagram size**: an image is cut into datagrams of at most 30 ms of budget (at least 200
@@ -313,6 +327,8 @@ on Windows a send to a closed port makes the next receive on the same socket fai
   moment they are captured, while a paced image keeps its capture time.
 - It keeps the newest of everything by frame number (older arrivals are ignored and not
   counted): telemetry, the track list, the keyframe and one patch per track of the newest list.
+  Telemetry of the held frame is ignored as well: the UAV sends one per frame, and a copy put on
+  the link again would turn the UAV clock back.
   A frame number more than 10 s (300 frames) below the held one is taken as a new run of the UAV
   (or the held one as forged): telemetry or tracks from it reset the foveated state.
 - Images must have their expected size in their header before they are decoded: a patch the
@@ -328,7 +344,10 @@ on Windows a send to a closed port makes the next receive on the same socket fai
   frames whose telemetry was lost. Images carry altitude and heading but no position, so the
   compositor looks the position up here. Track lists carry neither, so their whole pose
   (`telemetry_pose`: altitude too, and the heading interpolated the short way round) comes from
-  here as well.
+  here as well. While the GPS spoofing alarm is on (below), `fallback` holds the flow path, and
+  every position comes from it instead of the telemetry: the background warp, the track boxes
+  and the ghost tracks all follow the flow. `gps_position` is always the telemetry's.
+- Every new keyframe goes to the GPS spoofing check with the telemetry's position of its frame.
 - Every track list is handed to the ghost tracks (below) with the pose of its frame. A list that
   arrives before the telemetry of its frame waits for it (only the newest one waits).
 - The station keeps a UAV clock: the newest telemetry's frame / 30 plus the time since it
@@ -336,13 +355,14 @@ on Windows a send to a closed port makes the next receive on the same socket fai
   `--track-log` (in both modes) the predictions are written 30 times a second, one JSON line
   each: the UAV time, how long the foveated link has been silent, the origin of the ground frame
   (latitude, longitude of the first telemetry), and per track its state, time since the last fix,
-  mean, covariance (xx, xy, yy) and the filtered position at the last fix. Every line is flushed,
-  so a stopped process leaves only whole lines.
+  mean, covariance (xx, xy, yy) and the filtered position at the last fix; and `nav`: the newest
+  telemetry's frame, its GPS position, the position used for it and whether the spoofing alarm
+  is on. Every line is flushed, so a stopped process leaves only whole lines.
 - With `--no-view` the station runs in one loop and `--summary` prints one JSON line about the
   `--seconds` after `--warmup` seconds from the first foveated datagram: kbps per link and their
   ratio, telemetry and track messages per second and the share of frames that arrived, patches
   per second, keyframes, baseline frames per second, bad packets and messages, expired partial
-  messages.
+  messages, GPS spoofing alarms and keyframe pairs the check could not decide.
 
 ### Ghost tracks (`gcs/ghost_tracks.py`)
 One Kalman filter (constant velocity by default, `--motion-model ca` for constant acceleration)
@@ -376,6 +396,45 @@ with the camera's, ground metres do not.
   95.7 % and 96.4 % of the blackout frames. What it cannot foresee is a full stop: a car braking
   from 12 m/s to 0 during a blackout leaves the ellipse after 2-3 s, so over a run with only a few
   tracks the share depends on how many of them stopped.
+
+### GPS spoofing check (`gcs/spoof_detector.py`)
+The telemetry's position can be forged on the link, but the background keyframes show how the
+camera really moved. The check compares the two at every new keyframe.
+
+- **Flow between two keyframes** (`flow_displacement`): up to 200 Shi-Tomasi corners in the old
+  keyframe, followed into the new one by pyramidal Lucas-Kanade flow (21 x 21 window, 3 levels).
+  The camera model at the keyframe's size (`NadirCamera(480, 270)`, which puts a keyframe pixel
+  on the same ground point as the full-size pixels it was averaged from) turns each point into
+  its ground offset from the camera, with each keyframe's own altitude and heading. The same
+  ground point is old position + old offset = new position + new offset, so every point gives
+  the displacement old offset - new offset. Points more than 1 m from the median displacement
+  are dropped (moving vehicles, wrong matches), and the mean of the rest is the displacement;
+  its covariance is their spread over their number plus a floor of (0.1 m)^2 per axis for
+  errors that all points share. Fewer than 30 points left: no result.
+- The search windows start where an expected displacement puts the points: the last flow
+  velocity times the time between the keyframes, or the GPS velocity of the previous pair if
+  the flow has none yet. A pair a few seconds apart is otherwise too far for the flow to find;
+  a wrong guess only makes the pair fail.
+- **The chain**: the flow displacements are added up from the last keyframe whose GPS was
+  trusted. At each keyframe the GPS position minus the chain's position is the residual `r`,
+  and `d2 = r^T S^-1 r`, with `S` the chain's summed covariance plus (0.05 m)^2 per axis for the
+  GPS. `d2` above 9.21 (the 99 % point of the chi-square distribution with 2 degrees of
+  freedom) makes the keyframe suspect.
+- After a keyframe that agrees, the chain is tied to its GPS position again. After a suspect one
+  it is not, so a jump stays in the residual of every later keyframe, and a drift grows in it.
+- **Alarm**: 3 suspect keyframes in a row (in the `spoof_drift` and `spoof_jump` scenario runs,
+  1.3-1.8 s after the spoofing started). While it is on, the chain is
+  never tied to the GPS, and `fallback` is a `FlowPath`: the chain's position at each keyframe
+  since the last trusted one, a straight line in between, and after the newest one the last
+  flow velocity. 5 keyframes in a row that agree with the GPS again clear it.
+- A pair the flow cannot follow, or more than 3 s apart, decides nothing: without an alarm the
+  chain starts again at the new keyframe; during one it is carried on with the last velocity,
+  its uncertainty growing by 3 m/s per second. A keyframe of the frame already checked is
+  ignored; an older one (the UAV started again) starts everything again.
+- It only works where keyframes arrive: on a slow link they come seconds apart (the 15 % budget
+  share), and a total blackout brings none. A drift slow enough that each pair's residual stays
+  under the threshold is not caught, because the chain is tied to the GPS at every keyframe that
+  agrees.
 
 ### Compositor (`gcs/compositor.py`)
 Every piece arrives in the pixels of the frame it was captured in, and the view is drawn from
@@ -419,15 +478,19 @@ would scale by more than 4 (or less than 1/4) is not drawn.
   they are printed as one JSON line with the last second's numbers.
 - Every 125 ms half of the numbers and one of the two plots are refreshed, in turn: a plot takes
   3-5 ms to paint, and both in one frame made the next frame late.
-- No foveated datagram for 0.5 s: the view shows LINK LOST and how long.
+- No foveated datagram for 0.5 s: the view shows LINK LOST and how long. While the GPS spoofing
+  alarm is on it shows GPS SPOOFED, and the numbers below it the GPS and flow speeds over the
+  last keyframe pair, its `d2` and how many alarms there were.
 - In PyQt6 an exception that leaves a Qt slot ends the process, so the two timer slots catch
   everything and show it in the status line. Ctrl+C quits the event loop (a SIGINT handler), so
   the receiver stops and the frame times are still printed. The frame times of the last 10
   minutes are kept for that summary.
 - **EW deck**: sliders for packet loss (0-60 %), mean burst length (1-20), rate limit (off, 15 to
-  20,000 kbps in steps), delay (0-300 ms) and jitter (0-200 ms), a timed blackout and Clear.
-  Every change goes to all three links: the jammer hits the radio channel both ways, so a
-  blackout also silences the receiver reports and the UAV holds its budget.
+  20,000 kbps in steps), delay (0-300 ms), jitter (0-200 ms), GPS drift (0-10 m/s) and the
+  spoofing bearing (0-359 degrees), a timed blackout, a GPS jump (5-500 m, which sets the
+  offset) and Clear, which also ends the spoofing. Every change goes to all three links: the
+  jammer hits the radio channel both ways, so a blackout also silences the receiver reports
+  and the UAV holds its budget. The status shows the foveated link's spoofing offset.
 - `ProxyLink` never waits for the proxy: commands go out on a non-blocking socket, and replies
   and stats are read whenever they have arrived. Datagrams from any other address, and replies
   or stats that do not parse or hold a value that is not finite, are ignored; synced slider
@@ -463,5 +526,14 @@ The ports are the defaults (5600-5605, control 5700) or the same layout from `--
   more and the track was a GHOST are the blackout samples; it reports their share inside the
   95 % ellipse, overall and per whole second of TSLF, the length of each silence, and the share
   for samples with the link up.
-- `scenarios/`: `clean`, `loss30` (30 % loss in bursts of 4), `kbps50` (50 kbps on all links)
-  and `blackout` (three 5 s blackouts, 15 s apart, in 60 s).
+- `evaluate` also scores the GPS check from the track log's `nav`: the GPS position the station
+  received is compared with the UAV's true position at that frame. More than 10 cm off (the
+  telemetry carries about 1 cm) means spoofed; each time it starts is an onset, timed to the
+  first alarm after it (or counted as missed if none comes while it lasts). An alarm that
+  starts while the GPS is right is a false alarm. It also reports how long each alarm stayed
+  after the GPS was right again, and the error of the position used while the alarm was on.
+  With `--seeds` the detection times, misses and false alarms of all runs are pooled.
+- `scenarios/`: `clean`, `loss30` (30 % loss in bursts of 4), `kbps50` (50 kbps on all links),
+  `blackout` (three 5 s blackouts, 15 s apart, in 60 s), `spoof_drift` (a 3 m/s drift for 20 s
+  and for 16 s), `spoof_jump` (a 50 m jump held for 15 s, twice) and `clean_10min` (no events,
+  600 s: false alarms).

@@ -61,6 +61,10 @@ to 50 kbps on both video links (the deck takes the proxy's stats back after 2 s)
 ```
 python -c "from aegislink.common.proxy_control import ProxyControl as P; c = P(5700); c.configure(1, kbps=50); c.configure(2, kbps=50)"
 ```
+or to move the telemetry position 50 m east (GPS spoofing; `spoof_offset_m=0` ends it):
+```
+python -c "from aegislink.common.proxy_control import ProxyControl as P; P(5700).configure(1, spoof_bearing_deg=90, spoof_offset_m=50)"
+```
 Headless, the GCS measures what arrives (here 10 s after a 5 s warm-up) and prints it as JSON:
 ```
 python -m aegislink.gcs.main --no-view --seconds 10 --warmup 5 --summary
@@ -74,6 +78,8 @@ samples. A 60 s scenario takes about 70 s.
 ```
 python -m aegislink.tools.run_scenario scenarios/blackout.json
 python -m aegislink.tools.run_scenario scenarios/blackout.json --seeds 1 2 3
+python -m aegislink.tools.run_scenario scenarios/spoof_jump.json --seeds 1 2 3
+python -m aegislink.tools.run_scenario scenarios/clean_10min.json
 python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jsonl --tracks logs/scenarios/<run>/tracks.jsonl
 ```
 
@@ -93,7 +99,12 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
   refill capped at the depth.
 - `cpp/tests/test_link`: delay and jitter bounds, loss counting, queueing and drop-tail, blackout
   timing and its precedence, rejected settings, a settings change keeps the rate backlog, seeds.
-- `cpp/tests/test_control`: replies, every key, errors leave the link unchanged, the stats text.
+- `cpp/tests/test_spoofer`: an idle spoofer changes nothing; an offset moves the position along
+  its bearing and the packet still parses (CRC), with every other byte unchanged; a drift grows
+  with time; stopping it keeps the offset reached; other types, fragments, bad CRCs and short
+  bodies are left alone; bad settings change nothing; a huge offset stays within +-90 degrees.
+- `cpp/tests/test_control`: replies, every key (the spoof keys too), a command without spoof
+  keys keeps a drift going, errors leave the link unchanged, the stats text.
 - `cpp/tests/test_kalman`: predict and update of both models against hand-computed values (also
   with correlated measurement noise), the acceleration moving into position, a constant velocity
   learned, symmetric and positive covariance over 20,000 steps, bad input; and with a target
@@ -114,7 +125,9 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
 - `tests/test_proxy.py`: starts the installed `ew_chaos_proxy` and measures it with `link_meter`:
   datagrams pass unchanged and in order; control replies, errors and stats (4 per second);
   measured loss and mean burst length within 10 % of the settings (20,000 packets); throughput
-  never above the limit at 50 and 500 kbps (and above 90 % of it); delay and jitter; blackout.
+  never above the limit at 50 and 500 kbps (and above 90 % of it); delay and jitter; blackout;
+  spoofing moves the telemetry position 50 m east (the packet still parses, other fields and
+  other message types unchanged, counted in the stats), a drift grows and clearing it ends it.
   About 25 s.
 - `tests/test_camera.py`: latitude/longitude round trip, focal length and footprint, pixel ->
   ground -> pixel at five headings, image up = heading, the affine matrices against the point
@@ -145,7 +158,7 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
   without reads).
 - `tests/test_scheduler.py`: never more than the budget over 0.1-2 s windows (and over 95 % of
   it used); telemetry and tracks every frame at 50 kbps; a keyframe paced and whole at 50 kbps;
-  no seq gaps; whole frames skipped below the control rate; 10 Hz patches and 1 Hz keyframes at a
+  no seq gaps; whole frames skipped below the control rate; 10 Hz patches and 2 Hz keyframes at a
   high budget; a new track's patch first; keyframes within their budget share; no image in a
   frame whose telemetry and tracks were skipped (16 tracks at 30 kbps); telemetry and tracks
   larger than 0.1 s of budget still sent; an image cut at 2 Mbps still leaves after a cut to 50
@@ -169,7 +182,18 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
   become ground positions (coasting ones are not measured), a track list before its telemetry
   is measured when the telemetry comes, the UAV clock runs on and tracks turn GHOST in a silence
   (and are counted in the numbers), a restart clears them, the view holds them predicted to
-  now, the track log is written 30 times a second, the heading is interpolated the short way.
+  now, the track log is written 30 times a second, the heading is interpolated the short way;
+  telemetry repeating the held frame does not turn the UAV clock back.
+- `tests/test_spoof_detector.py`: keyframes recorded from a 40 s simulated flight (2 Hz). The
+  flow finds the true displacement between every pair (under 10 cm, mean under 3 cm) while the
+  UAV turns and climbs, and nothing on an untextured image; no alarm on the clean flight; a
+  3 m/s drift raises the alarm within 3 keyframes; a 50 m jump at the first suspect keyframe +
+  1 s, cleared after 5 agreeing ones; during 35 s of alarm the flow path stays within 1 m of the
+  true position while the GPS ends 100 m off; the flow path interpolates and carries on; pairs
+  the flow cannot follow, or too far apart, decide nothing; a repeated keyframe changes nothing.
+  The station: with the GPS 50 m off, every position the view uses comes from the flow, the
+  stats and the track log show the alarm, and it uses the GPS again once it agrees. Removing
+  the outlier rule or tying the chain to a suspect keyframe makes these tests fail.
 - `tests/test_compositor.py`: positions relative to the first telemetry, interpolated, 10 s
   kept; a dot on the background lands where the camera model puts its ground point after a
   move, a turn and a climb (within 1 px), and is only scaled without poses; a patch lands on its
@@ -183,9 +207,9 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
 - `tests/test_dashboard.py` (Qt offscreen; skipped where Qt cannot load): frame-time statistics;
   the window draws both views (patch, background and baseline pixels where expected) in under
   16.7 ms at the 95th percentile; a ghost drawn and counted while the link is silent; LINK
-  LOST after a silence; the EW deck starts at the proxy's
-  settings and sets loss, burst, rate, jitter, a blackout and Clear on all three links of the
-  real proxy; without a proxy it says so; bad replies (NaN, infinite, huge, missing stats keys)
+  LOST after a silence; GPS SPOOFED and the speeds while the alarm is on; the EW deck starts at
+  the proxy's settings and sets loss, burst, rate, jitter, a blackout, a GPS drift, bearing and
+  jump, and Clear on all three links of the real proxy; without a proxy it says so; bad replies (NaN, infinite, huge, missing stats keys)
   and datagrams from another address change nothing; an exception while drawing is shown, not
   fatal; the kept frame times are bounded; Ctrl+C closes the window cleanly (a subprocess that
   raises SIGINT exits 0 and prints its frame times). A live run (UAV process, proxy, this window, about
@@ -204,9 +228,12 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
 - `tests/test_scenario.py`: the ground truth interpolated between frames and moved between
   origins; blackout and link-up samples scored apart, by TSLF, with unmatched tracks counted;
   scenario files checked and completed, the shipped ones load; pooled shares weighted by
-  samples. A short scenario end to end (UAV, proxy, headless station; a 3 s blackout): the
-  silence is found, the tracks are scored (loose bounds: one blackout with a few tracks), and
-  `result.json` is written. About 15 s.
+  samples. The GPS check's score: detection timed from the moment the GPS went wrong, a false
+  alarm, the clear time and the error of the position used; a spoof without an alarm is
+  missed; pooled over runs. Two short scenarios end to end (UAV, proxy, headless station): a
+  3 s blackout (the silence is found, the tracks are scored with loose bounds, `result.json` is
+  written, no GPS alarm), and a 50 m GPS jump (alarm within 3 s, no false alarm, the position
+  used within 2 m of the truth, cleared after the GPS is right again). About 35 s.
 
 ## CI
 `.github/workflows/ci.yml` runs on every push: Windows (`msvc` preset) and Ubuntu (`gcc-asan`
