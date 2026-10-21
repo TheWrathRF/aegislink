@@ -100,9 +100,9 @@ def test_high_budget_meets_the_target_rates_and_is_not_limited():
                 counts[p.header.type] = counts.get(p.header.type, 0) + 1
     assert not s.limited
     assert counts[MsgType.TRACKS] == 8 * FPS
-    # 3 tracks at 10 Hz, keyframes at 1 Hz, over 8 s.
+    # 3 tracks at 10 Hz, keyframes at 2 Hz, over 8 s.
     assert 3 * 10 * 8 * 0.9 <= counts[MsgType.ROI_PATCH] <= 3 * 10 * 8 * 1.1
-    assert 7 <= counts[MsgType.BG_KEYFRAME] <= 9
+    assert 15 <= counts[MsgType.BG_KEYFRAME] <= 17
 
 
 def test_new_track_gets_its_patch_first():

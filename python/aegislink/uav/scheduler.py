@@ -58,8 +58,10 @@ class _Outgoing:
 
 class Scheduler:
     PATCH_INTERVAL_S = 0.1      # each track's patch at up to 10 Hz
-    KEYFRAME_INTERVAL_S = 1.0   # the background at up to 1 Hz,
-    KEYFRAME_SHARE = 0.15       # and with at most this share of the budget (patches come first)
+    # The background at up to 2 Hz: the GCS checks the GPS against the optical flow between
+    # keyframes, and needs 3 of them in a row to raise an alarm.
+    KEYFRAME_INTERVAL_S = 0.5
+    KEYFRAME_SHARE = 0.15       # keyframes take at most this share of the budget (patches first)
     BURST_S = 0.1               # tokens saved up beyond one image datagram
     # An image datagram takes at most this much of the budget (but carries at least MIN_CHUNK
     # bytes). On a slow link a full 1230-byte datagram holds the link for 200 ms (at 50 kbps),
