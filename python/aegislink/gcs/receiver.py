@@ -1,6 +1,7 @@
-"""The GCS end of the links: receive both streams, keep the newest of everything, and send the
-receiver reports that set the UAV's budget."""
+"""The GCS end of the links: receive both streams, keep the newest of everything, follow every
+track with a Kalman filter, and send the receiver reports that set the UAV's budget."""
 
+import json
 import math
 import select
 import socket
@@ -8,16 +9,19 @@ import threading
 import time
 from collections import Counter
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import numpy as np
 
 from aegislink._core import MsgType, Packetizer
 from aegislink.common import config, messages
 from aegislink.common.net import LinkReceiver, RateMeter
+from aegislink.gcs.ghost_tracks import GHOST, GhostTracks, semi_axes
 from aegislink.gcs.poses import PoseHistory
 from aegislink.uav.encoder import KEYFRAME_SIZE, PATCH_PAD, decode_image, image_size
 
 REPORT_INTERVAL_S = 0.25
+TRACK_LOG_INTERVAL_S = 1 / config.FPS
 # A keyframe is paced out at the budget rate: about 3 s for 5 KB at 50 kbps.
 FOVEA_TIMEOUT_US = 4_000_000
 # Sent the moment they are captured, so their delay is the link's delay.
@@ -65,6 +69,7 @@ class View:
     keyframe: Keyframe | None
     patches: dict               # track id -> Patch
     poses: PoseHistory = field(default_factory=PoseHistory)
+    ghosts: list = field(default_factory=list)      # ghost_tracks.Estimate, predicted to now
 
 
 class Measurement:
@@ -99,8 +104,41 @@ class Measurement:
         return result
 
 
+def _g(x):
+    return float(f"{x:.6g}")
+
+
+class TrackLog:
+    """The tracks as the station predicts them, one JSON object per line, 30 times a second: the
+    UAV time, how long the foveated link has been silent, the origin of the ground frame
+    (latitude, longitude), and per track its state, time since the last fix, mean, covariance
+    (xx, xy, yy) and the filtered position at the last fix (t, east, north)."""
+
+    def __init__(self, path):
+        path = Path(path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.file = path.open("w", encoding="utf-8", newline="\n")
+
+    def write(self, t, silent_s, origin, estimates):
+        tracks = [{"id": e.id, "state": e.state, "tslf": round(e.tslf_s, 4),
+                   "mean": [round(float(v), 3) for v in e.mean],
+                   "cov": [_g(e.cov[0, 0]), _g(e.cov[0, 1]), _g(e.cov[1, 1])],
+                   "fix": [round(e.fix[0], 4), round(float(e.fix[1]), 3),
+                           round(float(e.fix[2]), 3)]}
+                  for e in estimates]
+        line = {"t": round(t, 4), "silent": None if silent_s is None else round(silent_s, 3),
+                "origin": list(origin), "tracks": tracks}
+        self.file.write(json.dumps(line, separators=(",", ":")) + "\n")
+        # A scenario run may stop this process at any moment: every line is complete on disk.
+        self.file.flush()
+
+    def close(self):
+        self.file.close()
+
+
 class GroundStation:
-    def __init__(self, fovea_port, baseline_port, report_port):
+    def __init__(self, fovea_port, baseline_port, report_port, motion_model="cv",
+                 track_log=None):
         self.sockets = {}
         for name, port in (("fovea", fovea_port), ("baseline", baseline_port)):
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -116,9 +154,14 @@ class GroundStation:
                       "baseline": LinkReceiver()}
 
         self.telemetry = None           # newest TelemetryMsg
+        self.telemetry_arrived_s = None
         self.poses = PoseHistory()      # positions of the recent frames
         self.tracks_frame = None
         self.tracks = []                # newest list of TrackBox
+        self.ghosts = GhostTracks(motion_model)
+        self.unmeasured = None          # (frame, tracks) that arrived before their telemetry
+        self.track_log = None if track_log is None else TrackLog(track_log)
+        self.next_log_s = None
         self.keyframe = None            # newest Keyframe
         self.patches = {}               # track id -> newest Patch
         self.full_frame = None          # newest FullFrameMsg (decoded only when shown)
@@ -133,6 +176,8 @@ class GroundStation:
         for s in self.sockets.values():
             s.close()
         self.report_tx.close()
+        if self.track_log is not None:
+            self.track_log.close()
 
     def poll(self, timeout_s):
         """Waits up to `timeout_s` for datagrams and handles all that are waiting."""
@@ -170,7 +215,7 @@ class GroundStation:
         except ValueError:
             self.bad_messages += 1
             return
-        result = self._apply(message.type, body)
+        result = self._apply(message.type, body, now_s)
         if result == BAD:
             self.bad_messages += 1
         if result != USED:
@@ -182,7 +227,7 @@ class GroundStation:
                 frame = body.frame if message.type == MsgType.TELEMETRY else body[0]
                 self.measurement.frames[message.type].add(frame)
 
-    def _apply(self, msg_type, body):
+    def _apply(self, msg_type, body, now_s=None):
         """Keeps the body if it is newer than what is held: USED, OLD (ignored) or BAD."""
         if msg_type in (MsgType.TELEMETRY, MsgType.ROI_PATCH, MsgType.BG_KEYFRAME):
             if not _sane_pose(body.alt_m, body.heading_deg):
@@ -194,7 +239,10 @@ class GroundStation:
             if _restarted(body.frame, held):
                 self._forget()
             self.telemetry = body
+            self.telemetry_arrived_s = time.monotonic() if now_s is None else now_s
             self.poses.add(body)
+            if self.unmeasured is not None:
+                self._measure(*self.unmeasured)
         elif msg_type == MsgType.TRACKS:
             frame, tracks = body
             if not _newer(frame, self.tracks_frame):
@@ -202,6 +250,7 @@ class GroundStation:
             if _restarted(frame, self.tracks_frame):
                 self._forget()
             self.tracks_frame, self.tracks = frame, tracks
+            self._measure(frame, tracks)
             ids = {t.id for t in tracks}
             self.patches = {tid: p for tid, p in self.patches.items() if tid in ids}
         elif msg_type == MsgType.ROI_PATCH:
@@ -240,22 +289,72 @@ class GroundStation:
             self.full_frame = body
         return USED
 
+    def _measure(self, frame, tracks):
+        """Feeds a track list to the ghost tracks once the telemetry of its frame is held (the
+        two can arrive in either order)."""
+        pose = self.poses.telemetry_pose(frame)
+        if pose is None:
+            newest = self.telemetry.frame if self.telemetry else None
+            self.unmeasured = (frame, tracks) if newest is None or frame > newest else None
+            return
+        self.unmeasured = None
+        self.ghosts.add_boxes(frame, tracks, pose)
+
     def _forget(self):
         """Drops the foveated state of an earlier run of the UAV."""
         self.telemetry = None
+        self.telemetry_arrived_s = None
         self.poses.clear()
         self.tracks_frame, self.tracks = None, []
         self.keyframe = None
         self.patches = {}
+        self.ghosts.clear()
+        self.unmeasured = None
 
-    def view(self):
-        """A copy of what the foveated view needs, safe to draw from while receiving goes on."""
+    def uav_time(self, now_s):
+        """The UAV's time now (frame / FPS), from its newest telemetry and the time since that
+        arrived, or None before any telemetry. During a blackout it keeps running."""
+        if self.telemetry is None:
+            return None
+        return self.telemetry.frame / config.FPS + max(0.0, now_s - self.telemetry_arrived_s)
+
+    def ghost_estimates(self, now_s, path=True):
+        """The tracks that are not lost, predicted to now."""
+        t = self.uav_time(now_s)
+        if t is None:
+            return []
+        self.ghosts.prune(t)
+        return self.ghosts.estimates(t, path)
+
+    def view(self, now_s=None):
+        """A copy of what the foveated view needs, safe to draw from while receiving goes on;
+        with `now_s`, also the tracks predicted to then."""
+        ghosts = [] if now_s is None else self.ghost_estimates(now_s)
         return View(self.telemetry, self.tracks_frame, list(self.tracks), self.keyframe,
-                    dict(self.patches), self.poses.copy())
+                    dict(self.patches), self.poses.copy(), ghosts)
+
+    def log_tracks_if_due(self, now_s):
+        if self.track_log is None or self.telemetry is None:
+            return
+        if self.next_log_s is None:
+            self.next_log_s = now_s
+        if now_s < self.next_log_s:
+            return
+        self.next_log_s += TRACK_LOG_INTERVAL_S
+        if self.next_log_s < now_s:
+            self.next_log_s = now_s + TRACK_LOG_INTERVAL_S
+        silent = None if self.last_fovea_s is None else now_s - self.last_fovea_s
+        self.track_log.write(self.uav_time(now_s), silent, self.poses.origin,
+                             self.ghost_estimates(now_s, path=False))
 
     def stats(self, now_s):
-        """The numbers the dashboard shows: rates over the last second, and ages."""
+        """The numbers the dashboard shows: rates over the last second, ages, and the ghost
+        tracks."""
         rate = {t: self.message_rate[t].rate(now_s) for t in MsgType}
+        t = self.uav_time(now_s)
+        estimates = [] if t is None else self.ghosts.estimates(t, path=False)
+        ghosts = [e for e in estimates if e.state == GHOST]
+        areas = [math.pi * a * b for a, b in (semi_axes(e.cov) for e in ghosts)]
         keyframe_age = None
         if self.keyframe is not None and self.telemetry is not None:
             keyframe_age = max(0, self.telemetry.frame - self.keyframe.msg.frame) / config.FPS
@@ -271,6 +370,10 @@ class GroundStation:
             "bad_packets": self.links["fovea"].bad + self.links["baseline"].bad,
             "bad_messages": self.bad_messages,
             "expired": self.links["fovea"].reassembler.stats.expired,
+            "filtered_tracks": len(estimates),
+            "ghost_tracks": len(ghosts),
+            "max_tslf_s": max((e.tslf_s for e in ghosts), default=None),
+            "max_ellipse_m2": max(areas, default=None),
         }
 
     def send_report_if_due(self, now_s):
@@ -315,7 +418,9 @@ class ReceiverThread:
                 readable = self.station.wait(self.poll_s)     # without the lock
                 with self.lock:
                     self.station.read(readable)
-                    self.station.send_report_if_due(time.monotonic())
+                    now = time.monotonic()
+                    self.station.send_report_if_due(now)
+                    self.station.log_tracks_if_due(now)
         except Exception as e:      # shown by the UI instead of dying silently
             self.error = e
 
@@ -323,4 +428,5 @@ class ReceiverThread:
         """(View, newest FullFrameMsg or None, stats) as of now."""
         with self.lock:
             s = self.station
-            return s.view(), s.full_frame, s.stats(time.monotonic())
+            now = time.monotonic()
+            return s.view(now), s.full_frame, s.stats(now)

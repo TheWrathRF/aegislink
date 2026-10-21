@@ -7,7 +7,8 @@ It receives the foveated stream and the baseline from the proxy (or, with --dire
 UAV) and sends receiver reports back 4 times per second. The window's EW deck sets the proxy's
 links through its control port. When the window closes, its frame times are printed as one JSON
 line. Without a window, --summary prints, as one JSON line, what arrived between --warmup seconds
-after the first foveated datagram and --seconds after that.
+after the first foveated datagram and --seconds after that. Every track is followed by a Kalman
+filter in ground metres (--motion-model); --track-log writes its predictions 30 times a second.
 """
 
 import argparse
@@ -17,6 +18,7 @@ import time
 from pathlib import Path
 
 from aegislink.common import config
+from aegislink.gcs.ghost_tracks import MODELS
 from aegislink.gcs.receiver import GroundStation
 
 NOTHING_ARRIVES_S = 15.0
@@ -31,6 +33,7 @@ def run_headless(station, seconds=None, warmup_s=0.0):
             station.poll(0.002)
             now = time.monotonic()
             station.send_report_if_due(now)
+            station.log_tracks_if_due(now)
             if station.first_fovea_s is None:
                 if seconds is not None and now - started > NOTHING_ARRIVES_S:
                     break
@@ -61,6 +64,10 @@ def main():
                         help="where receiver reports go (default: the proxy's report link)")
     parser.add_argument("--proxy-control", type=int, default=config.PROXY_CONTROL,
                         help="the proxy's control port, for the EW deck")
+    parser.add_argument("--motion-model", choices=sorted(MODELS), default="cv",
+                        help="the tracks' Kalman filter: constant velocity or acceleration")
+    parser.add_argument("--track-log", type=Path,
+                        help="write the predicted tracks here (JSON lines, 30 per second)")
     args = parser.parse_args()
     if args.summary and not args.no_view:
         parser.error("--summary needs --no-view")
@@ -68,7 +75,8 @@ def main():
         parser.error("--snapshot needs the window")
     report_port = args.report_port or (config.REPORTS_TO_UAV if args.direct
                                        else config.REPORTS_TO_PROXY)
-    station = GroundStation(args.fovea_port, args.baseline_port, report_port)
+    station = GroundStation(args.fovea_port, args.baseline_port, report_port, args.motion_model,
+                            args.track_log)
     try:
         if args.no_view:
             run_headless(station, args.seconds, args.warmup)

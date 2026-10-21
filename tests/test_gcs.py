@@ -237,3 +237,105 @@ def test_snapshot_needs_the_window(tmp_path):
     result = subprocess.run([sys.executable, "-m", "aegislink.gcs.main", "--no-view",
                              "--snapshot", str(tmp_path / "x.png")], capture_output=True, timeout=30)
     assert result.returncode == 2
+
+
+def telemetry_at(frame, lat=46.0, lon=7.0, alt=150.0, heading=0.0):
+    return messages.encode_telemetry(messages.TelemetryMsg(frame, lat, lon, alt, 10, heading, 0, 0))
+
+
+def centre_box(dx=0.0, dy=0.0):
+    cx, cy = compositor.CAMERA.cx + dx, compositor.CAMERA.cy + dy
+    return (round(cx - 15), round(cy - 8), round(cx + 15), round(cy + 8))
+
+
+def test_matched_boxes_feed_the_ghost_tracks_in_ground_metres(station):
+    deliver(station, MsgType.TELEMETRY, telemetry_at(30, heading=90.0), now_s=1.0)
+    # 100 px right of the centre with the nose east: 100 x 0.135 m south of the UAV.
+    deliver(station, MsgType.TRACKS, messages.encode_tracks(30, [
+        messages.TrackBox(4, centre_box(dx=100), True),
+        messages.TrackBox(5, centre_box(dx=-50), False)]), now_s=1.0)
+    (e,) = station.ghost_estimates(1.0)
+    mpp = compositor.CAMERA.metres_per_pixel(150.0)
+    assert e.id == 4 and e.state == "LIVE"
+    assert e.mean == pytest.approx((0.0, -100 * mpp), abs=0.1)
+
+
+def test_a_track_list_before_its_telemetry_is_measured_when_the_telemetry_comes(station):
+    deliver(station, MsgType.TELEMETRY, telemetry_at(30), now_s=1.0)
+    deliver(station, MsgType.TRACKS, messages.encode_tracks(31, [
+        messages.TrackBox(4, centre_box(), True)]), now_s=1.03)
+    assert station.ghosts.tracks == {}
+    deliver(station, MsgType.TELEMETRY, telemetry_at(31), now_s=1.04)
+    assert station.ghosts.tracks[4].t == pytest.approx(31 / 30)
+
+
+def test_tracks_turn_ghost_when_the_link_goes_silent(station):
+    for frame in range(30, 60):
+        now = frame / 30
+        deliver(station, MsgType.TELEMETRY, telemetry_at(frame, lat=46.0 + frame * 1e-6), now)
+        deliver(station, MsgType.TRACKS, messages.encode_tracks(
+            frame, [messages.TrackBox(9, centre_box(), True)]), now)
+    last = 59 / 30
+    assert station.uav_time(last + 2.0) == pytest.approx(last + 2.0)
+    (e,) = station.ghost_estimates(last + 0.1)
+    assert e.state == "LIVE"
+    (e,) = station.ghost_estimates(last + 2.0)
+    assert e.state == "GHOST" and e.tslf_s == pytest.approx(2.0)
+    # The UAV (and the vehicle under it) moves north at about 3.3 m/s: so does the prediction.
+    assert e.velocity[1] == pytest.approx(3.34, abs=0.3)
+    stats = station.stats(last + 2.0)
+    assert stats["ghost_tracks"] == 1 and stats["filtered_tracks"] == 1
+    assert stats["max_tslf_s"] == pytest.approx(2.0)
+    assert stats["max_ellipse_m2"] > 10
+    assert station.ghost_estimates(last + 10.5) == [] and station.ghosts.tracks == {}
+
+
+def test_a_restarted_uav_clears_the_ghost_tracks(station):
+    deliver(station, MsgType.TELEMETRY, telemetry_at(900), now_s=1.0)
+    deliver(station, MsgType.TRACKS, messages.encode_tracks(
+        900, [messages.TrackBox(1, centre_box(), True)]), now_s=1.0)
+    assert station.ghosts.tracks
+    deliver(station, MsgType.TELEMETRY, telemetry_at(0), now_s=1.1)
+    assert station.ghosts.tracks == {}
+    assert station.stats(1.2)["ghost_tracks"] == 0
+
+
+def test_view_with_a_time_holds_the_predicted_tracks(station):
+    deliver(station, MsgType.TELEMETRY, telemetry_at(30), now_s=1.0)
+    deliver(station, MsgType.TRACKS, messages.encode_tracks(
+        30, [messages.TrackBox(2, centre_box(), True)]), now_s=1.0)
+    assert station.view().ghosts == []
+    (e,) = station.view(1.5).ghosts
+    assert e.id == 2 and e.state == "GHOST" and len(e.path) == 20
+
+
+def test_track_log_writes_the_predictions_30_times_a_second(tmp_path):
+    import json
+    path = tmp_path / "tracks.jsonl"
+    s = GroundStation(0, 0, 9, track_log=path)
+    try:
+        s.log_tracks_if_due(0.5)            # no telemetry yet: nothing to write
+        deliver(s, MsgType.TELEMETRY, telemetry_at(30), now_s=1.0)
+        deliver(s, MsgType.TRACKS, messages.encode_tracks(
+            30, [messages.TrackBox(2, centre_box(), True)]), now_s=1.0)
+        for i in range(31):
+            s.log_tracks_if_due(1.0 + i / 60 + (0.002 if i else 0))  # 60 Hz: every other writes
+        lines = [json.loads(line) for line in path.read_text().splitlines()]
+    finally:
+        s.close()
+    assert len(lines) == 16
+    first, last = lines[0], lines[-1]
+    assert first["t"] == pytest.approx(1.0) and first["origin"] == pytest.approx([46.0, 7.0])
+    assert last["t"] == pytest.approx(1.502, abs=1e-3)
+    (track,) = last["tracks"]
+    assert track["id"] == 2 and track["state"] == "GHOST" and track["tslf"] == pytest.approx(0.502)
+    assert track["fix"] == pytest.approx([1.0, 0.0, 0.0], abs=0.1) and len(track["cov"]) == 3
+
+
+def test_telemetry_pose_interpolates_the_heading_the_short_way(station):
+    deliver(station, MsgType.TELEMETRY, telemetry_at(10, alt=100.0, heading=350.0))
+    deliver(station, MsgType.TELEMETRY, telemetry_at(12, alt=120.0, heading=10.0))
+    pose = station.poses.telemetry_pose(11)
+    assert pose.alt == pytest.approx(110.0) and pose.heading_deg == pytest.approx(0.0, abs=1e-9)
+    assert station.poses.telemetry_pose(12).heading_deg == pytest.approx(10.0)
+    assert station.poses.telemetry_pose(13) is None
