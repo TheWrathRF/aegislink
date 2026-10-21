@@ -77,6 +77,51 @@ def test_positions_measured_from_another_origin_are_moved_into_the_map_frame():
     assert result["tracks_matched"] == 1 and result["blackout_inside"] == 1.0
 
 
+def nav_sample(t, frame, gps, used, alarm):
+    return {"t": t, "silent": 0.0, "origin": list(ORIGIN), "tracks": [],
+            "nav": {"frame": frame, "gps": list(gps), "used": list(used), "alarm": alarm}}
+
+
+def test_spoof_detection_is_timed_from_the_moment_the_gps_went_wrong():
+    lines = truth_lines(frames=300)
+    for i, line in enumerate(lines[1:]):
+        line["uav"] = {"east": 10.0 * i / 30, "north": 0.0}       # flies east at 10 m/s
+    truth = evaluate.Truth(lines)
+    samples = [sample(0.0, 0.0, [])]        # a line without "nav" (an older log) is skipped
+    for i in range(300):
+        t = i / 30
+        jumped = 3.0 <= t < 6.0                     # the GPS 50 m north from 3 s to 6 s
+        alarm = 0.5 <= t < 0.8 or 4.0 <= t < 7.0    # one false alarm, one detection
+        gps = (10.0 * t, 50.0 if jumped else 0.0)
+        used = (10.0 * t + (0.3 if alarm else 0.0), 0.0) if alarm else gps
+        samples.append(nav_sample(t, i, gps, used, alarm))
+    result = evaluate.spoof_detection(truth, samples)
+    assert result["spoof_onsets"] == 1 and result["missed"] == 0
+    assert result["detection_s"] == pytest.approx([1.0], abs=0.02)
+    assert result["false_alarms"] == 1
+    assert result["clear_s"] == pytest.approx([1.0], abs=0.02)
+    assert result["flow_error_m"]["max"] == pytest.approx(0.3, abs=1e-3)
+    assert result["gps_error_max_m"] == pytest.approx(50.0, abs=1e-3)
+
+
+def test_a_spoof_that_never_raises_the_alarm_is_missed():
+    lines = truth_lines(frames=60)
+    for i, line in enumerate(lines[1:]):
+        line["uav"] = {"east": 0.0, "north": 0.0}
+    samples = [nav_sample(i / 30, i, (0.0, 20.0 if i >= 30 else 0.0), (0.0, 0.0), False)
+               for i in range(60)]
+    result = evaluate.spoof_detection(evaluate.Truth(lines), samples)
+    assert result["spoof_onsets"] == 1 and result["missed"] == 1 and result["detection_s"] == []
+
+
+def test_pooled_spoof_results_add_up_over_runs():
+    results = [{"nav": {"spoof_onsets": 1, "detection_s": [1.2], "missed": 0, "false_alarms": 0}},
+               {"nav": {"spoof_onsets": 1, "detection_s": [], "missed": 1, "false_alarms": 2}}]
+    assert run_scenario.pooled_spoof(results) == {"spoof_onsets": 2, "detection_s": [1.2],
+                                                  "max_detection_s": 1.2, "missed": 1,
+                                                  "false_alarms": 2}
+
+
 def test_scenario_files_are_checked_and_completed(tmp_path):
     path = tmp_path / "x.json"
     path.write_text(json.dumps({"seconds": 10, "events": [
@@ -123,3 +168,18 @@ def test_a_short_blackout_scenario_end_to_end(tmp_path):
     saved = json.loads((tmp_path / "result.json").read_text())
     assert saved["tracks"] == tracks
     assert (tmp_path / "ground_truth.jsonl").stat().st_size > 0
+    assert result["nav"]["spoof_onsets"] == 0 and result["nav"]["false_alarms"] == 0
+
+
+def test_a_short_gps_jump_scenario_end_to_end(tmp_path):
+    """The proxy moves the telemetry position 50 m east; the station raises the alarm within
+    3 s from the keyframes' flow and navigates by the flow until the GPS is right again."""
+    scenario = {"name": "jump", "seconds": 12, "warmup_s": 2, "seed": 3, "events": [
+        {"at_s": 6, "links": [1], "set": {"spoof_bearing_deg": 90, "spoof_offset_m": 50}},
+        {"at_s": 11, "links": [1], "set": {"spoof_offset_m": 0}}]}
+    result = run_scenario.run(scenario, tmp_path, free_port_block())
+    nav = result["nav"]
+    assert nav["spoof_onsets"] == 1 and nav["missed"] == 0 and nav["false_alarms"] == 0
+    assert nav["detection_s"][0] <= 3.0
+    assert nav["flow_error_m"]["max"] < 2.0
+    assert len(nav["clear_s"]) == 1 and result["summary"]["gps_alarms"] == 1

@@ -1,0 +1,13 @@
+{
+  "name": "spoof_jump",
+  "description": "The telemetry position jumps 50 m and stays off for 15 s, then is right again; twice",
+  "seconds": 60,
+  "warmup_s": 5,
+  "seed": 1,
+  "events": [
+    {"at_s": 12, "links": [1], "set": {"spoof_bearing_deg": 0, "spoof_offset_m": 50}},
+    {"at_s": 27, "links": [1], "set": {"spoof_offset_m": 0}},
+    {"at_s": 40, "links": [1], "set": {"spoof_bearing_deg": 135, "spoof_offset_m": 50}},
+    {"at_s": 55, "links": [1], "set": {"spoof_offset_m": 0}}
+  ]
+}

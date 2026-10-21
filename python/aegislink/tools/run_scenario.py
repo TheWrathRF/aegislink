@@ -12,9 +12,9 @@ It starts the proxy, the ground station (headless, with its summary and track lo
 (with its ground-truth log). Each event sets the given keys (the proxy's control keys) on all
 three links, like the EW deck, at `at_s` seconds after the UAV started; "links": [1, 2] limits
 it. The ground station measures for `seconds` after `warmup_s`. The logs and a result.json with
-the station's summary and the track score (`evaluate`) go to a new folder under logs/scenarios.
-With --seeds the scenario runs once per seed (world, traffic and proxy), each in its own
-sub-folder, and the blackout samples of all runs are pooled.
+the station's summary, the track score and the GPS check's score (`evaluate`) go to a new folder
+under logs/scenarios. With --seeds the scenario runs once per seed (world, traffic and proxy),
+each in its own sub-folder, and the blackout samples and GPS checks of all runs are pooled.
 """
 
 import argparse
@@ -104,9 +104,10 @@ def run(scenario, out_dir, base_port=config.FOVEA_TO_PROXY):
                     process.kill()
     lines = summary_text.strip().splitlines()
     summary = json.loads(lines[-1]) if lines else {"error": "no summary"}
-    tracks = evaluate.ghost_consistency(evaluate.Truth.read(truth_log),
-                                        evaluate.read_jsonl(track_log))
-    result = {"scenario": scenario, "summary": summary, "tracks": tracks}
+    truth, samples = evaluate.Truth.read(truth_log), evaluate.read_jsonl(track_log)
+    result = {"scenario": scenario, "summary": summary,
+              "tracks": evaluate.ghost_consistency(truth, samples),
+              "nav": evaluate.spoof_detection(truth, samples)}
     (out_dir / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     return result
 
@@ -118,6 +119,16 @@ def pooled_blackout_inside(results):
                  for r in results)
     return {"blackout_samples": samples,
             "blackout_inside": round(inside / samples, 4) if samples else None}
+
+
+def pooled_spoof(results):
+    """The GPS check over several runs: every detection time, the slowest, misses, false alarms."""
+    detections = [d for r in results for d in r["nav"]["detection_s"]]
+    return {"spoof_onsets": sum(r["nav"]["spoof_onsets"] for r in results),
+            "detection_s": detections,
+            "max_detection_s": max(detections, default=None),
+            "missed": sum(r["nav"]["missed"] for r in results),
+            "false_alarms": sum(r["nav"]["false_alarms"] for r in results)}
 
 
 def main():
@@ -136,16 +147,16 @@ def main():
     if not args.seeds:
         result = run(scenario, out, args.base_port)
         print(json.dumps({"out": str(out), "summary": result["summary"],
-                          "tracks": result["tracks"]}))
+                          "tracks": result["tracks"], "nav": result["nav"]}))
         return
     results = []
     for seed in args.seeds:
         result = run(dict(scenario, seed=seed), out / f"seed_{seed}", args.base_port)
         results.append(result)
-        print(json.dumps({"seed": seed, "summary": result["summary"], "tracks": result["tracks"]}),
-              flush=True)
+        print(json.dumps({"seed": seed, "summary": result["summary"], "tracks": result["tracks"],
+                          "nav": result["nav"]}), flush=True)
     print(json.dumps({"out": str(out), "seeds": args.seeds,
-                      "pooled": pooled_blackout_inside(results)}))
+                      "pooled": pooled_blackout_inside(results), "pooled_nav": pooled_spoof(results)}))
 
 
 if __name__ == "__main__":

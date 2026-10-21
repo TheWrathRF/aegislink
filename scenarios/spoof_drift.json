@@ -1,0 +1,13 @@
+{
+  "name": "spoof_drift",
+  "description": "The telemetry position drifts east at 3 m/s for 20 s, then is right again; twice",
+  "seconds": 60,
+  "warmup_s": 5,
+  "seed": 1,
+  "events": [
+    {"at_s": 12, "links": [1], "set": {"spoof_bearing_deg": 90, "spoof_drift_mps": 3}},
+    {"at_s": 32, "links": [1], "set": {"spoof_drift_mps": 0, "spoof_offset_m": 0}},
+    {"at_s": 42, "links": [1], "set": {"spoof_bearing_deg": 200, "spoof_drift_mps": 3}},
+    {"at_s": 58, "links": [1], "set": {"spoof_drift_mps": 0, "spoof_offset_m": 0}}
+  ]
+}
