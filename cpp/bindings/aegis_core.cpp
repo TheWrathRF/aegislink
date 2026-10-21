@@ -1,5 +1,6 @@
-// Python module aegislink._core: the wire protocol and reassembler.
+// Python module aegislink._core: the wire protocol, the reassembler and the Kalman filter.
 #include "aegis/crc32.hpp"
+#include "aegis/kalman.hpp"
 #include "aegis/protocol.hpp"
 #include "aegis/reassembler.hpp"
 
@@ -38,7 +39,7 @@ struct Packet {
 }  // namespace
 
 PYBIND11_MODULE(_core, m) {
-    m.doc() = "AegisLink wire protocol (C++ core)";
+    m.doc() = "AegisLink wire protocol and Kalman filter (C++ core)";
 
     m.attr("MAGIC") = kMagic;
     m.attr("VERSION") = kVersion;
@@ -150,4 +151,33 @@ PYBIND11_MODULE(_core, m) {
         .def("expire", &Reassembler::expire, py::arg("now_us"))
         .def_property_readonly("pending", &Reassembler::pending)
         .def_property_readonly("stats", &Reassembler::stats, py::return_value_policy::copy);
+
+    py::native_enum<MotionModel>(m, "MotionModel", "enum.Enum")
+        .value("CONSTANT_VELOCITY", MotionModel::ConstantVelocity)
+        .value("CONSTANT_ACCELERATION", MotionModel::ConstantAcceleration)
+        .finalize();
+
+    py::class_<KalmanFilter>(m, "KalmanFilter")
+        .def(py::init<MotionModel, double>(), py::arg("model"), py::arg("q"))
+        .def("init", &KalmanFilter::init, py::arg("x"), py::arg("y"), py::arg("r"), py::arg("speed_std"),
+             py::arg("accel_std") = 0.0)
+        .def("predict", &KalmanFilter::predict, py::arg("dt"))
+        .def("update", &KalmanFilter::update, py::arg("x"), py::arg("y"), py::arg("r"))
+        .def("predicted", &KalmanFilter::predicted, py::arg("dt"))
+        .def("copy", [](const KalmanFilter& self) { return self; })
+        .def_property_readonly("model", &KalmanFilter::model)
+        .def_property_readonly("q", &KalmanFilter::q)
+        .def_property_readonly("dim", &KalmanFilter::dim)
+        .def_property_readonly("state", &KalmanFilter::state)
+        .def_property_readonly("covariance",
+                               [](const KalmanFilter& self) {
+                                   std::vector<std::vector<double>> rows(self.dim());
+                                   for (std::size_t i = 0; i < self.dim(); ++i) {
+                                       for (std::size_t j = 0; j < self.dim(); ++j) {
+                                           rows[i].push_back(self.covariance(i, j));
+                                       }
+                                   }
+                                   return rows;
+                               })
+        .def_property_readonly("position_covariance", &KalmanFilter::position_covariance);
 }

@@ -1,5 +1,6 @@
 add_library(aegis_core STATIC
   src/crc32.cpp
+  src/kalman.cpp
   src/protocol.cpp
   src/reassembler.cpp
 )
