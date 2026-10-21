@@ -164,12 +164,14 @@ class SpoofDetector:
 
     def add_keyframe(self, frame, image, alt, heading_deg, gps):
         """`gps`: the telemetry's (east, north) at `frame`, or None if not known."""
-        if gps is None:
+        if gps is None or (self.last is not None and frame == self.last.frame):
             return
+        if self.last is not None and frame < self.last.frame:     # the UAV started again
+            self.clear()
         gps = np.array(gps, float)
         new = _Keyframe(frame, image, (alt, heading_deg), gps)
         old, self.last = self.last, new
-        if old is None or frame <= old.frame:
+        if old is None:
             self._tie(frame, gps)
             return
         dt = (frame - old.frame) / config.FPS

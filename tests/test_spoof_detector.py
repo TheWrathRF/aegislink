@@ -1,13 +1,17 @@
 """GPS spoofing detection from optical flow between background keyframes, and the flow path the
 GCS navigates by while the GPS is rejected. The keyframes are recorded from a simulated flight."""
 
+import json
 import math
 
+import cv2
 import numpy as np
 import pytest
 
-from aegislink.common import config
+from aegislink._core import MsgType, Packetizer
+from aegislink.common import config, geo, messages
 from aegislink.gcs import spoof_detector
+from aegislink.gcs.receiver import GroundStation
 from aegislink.gcs.spoof_detector import FlowPath, SpoofDetector, flow_displacement
 from aegislink.uav.camera import NadirCamera
 from aegislink.uav.encoder import KEYFRAME_SIZE, decode_image, encode_keyframe
@@ -16,6 +20,7 @@ from aegislink.uav.telemetry import Flight
 
 STEP = 15           # frames between keyframes (2 Hz)
 SECONDS = 40
+ORIGIN = (46.0, 7.0)
 
 
 @pytest.fixture(scope="module")
@@ -135,6 +140,74 @@ def test_pairs_that_the_flow_cannot_follow_decide_nothing(flight):
         # Untextured keyframes and a GPS that jumps 50 m every time: never an alarm.
         detector.add_keyframe(frame, flat, pose.alt, pose.heading_deg, (frame * 50.0, 0.0))
     assert detector.alarms == 0 and detector.undecided == 19
+
+
+def test_a_repeated_keyframe_changes_nothing(flight):
+    def jump(t):
+        return (0.0, 50.0) if t >= 5.0 else (0.0, 0.0)
+
+    detector, _ = run(flight, jump, until_s=7.0)
+    assert detector.alarm
+    chain = list(detector.frames)
+    frame, image, pose = flight[14]                    # 7.0 s, the last one fed
+    detector.add_keyframe(frame, image, pose.alt, pose.heading_deg, (pose.east, pose.north))
+    assert detector.alarm and detector.frames == chain
+
+
+@pytest.fixture
+def station(tmp_path):
+    s = GroundStation(0, 0, 9, track_log=tmp_path / "tracks.jsonl")
+    yield s
+    s.close()
+
+
+def fly_station(station, flight, spoof, until_s):
+    """Telemetry (true position + spoof(t), ORIGIN at the start) and keyframes, every STEP frames."""
+    tx = Packetizer()
+    start = flight[0][2]
+    for frame, image, pose in flight:
+        t = frame / config.FPS
+        if t > until_s:
+            break
+        offset = spoof(t)
+        lat, lon = geo.enu_to_latlon(pose.east - start.east + offset[0],
+                                     pose.north - start.north + offset[1], ORIGIN)
+        tel = messages.TelemetryMsg(frame, float(lat), float(lon), pose.alt, 10.0, pose.heading_deg,
+                                    0.0, 0.0)
+        webp = cv2.imencode(".webp", image, [cv2.IMWRITE_WEBP_QUALITY, 25])[1].tobytes()
+        keyframe = messages.KeyframeMsg(frame, pose.alt, pose.heading_deg, webp)
+        for msg_type, body in ((MsgType.TELEMETRY, messages.encode_telemetry(tel)),
+                               (MsgType.BG_KEYFRAME, messages.encode_keyframe(keyframe))):
+            for datagram in tx.packetize(msg_type, frame * 33_333, body):
+                station._receive("fovea", datagram, t)
+        station.log_tracks_if_due(t)
+    return start
+
+
+def test_the_station_navigates_by_the_flow_while_the_gps_is_spoofed(station, flight):
+    start = fly_station(station, flight, lambda t: (50.0, 0.0) if t >= 10.0 else (0.0, 0.0), 20.0)
+    frame, _, pose = flight[40]                         # 20.0 s
+    stats = station.stats(20.0)
+    assert stats["gps_alarm"] and stats["gps_alarms"] == 1 and stats["spoof_d2"] > 1000
+    assert stats["flow_speed"] == pytest.approx(stats["gps_speed"], abs=1.0)
+    # Every position the view uses since the alarm comes from the flow, not the GPS 50 m off.
+    view = station.view()
+    for f in range(330, frame + 1):
+        east, north = view.poses.position(f)
+        assert view.poses.gps_position(f)[0] == pytest.approx(east + 50, abs=1.5)
+    east, north = view.poses.position(frame)
+    assert math.hypot(east - (pose.east - start.east), north - (pose.north - start.north)) < 0.5
+    line = json.loads(station.track_log.path.read_text().splitlines()[-1])
+    assert line["nav"]["alarm"] and line["nav"]["frame"] == frame
+    assert line["nav"]["gps"][0] == pytest.approx(line["nav"]["used"][0] + 50, abs=0.5)
+
+
+def test_the_station_uses_the_gps_again_once_it_agrees(station, flight):
+    fly_station(station, flight, lambda t: (0.0, -50.0) if 5.0 <= t < 10.0 else (0.0, 0.0), 15.0)
+    stats = station.stats(15.0)
+    assert not stats["gps_alarm"] and stats["gps_alarms"] == 1
+    assert station.poses.fallback is None
+    assert station.poses.position(450) == station.poses.gps_position(450)
 
 
 def test_keyframes_too_far_apart_are_not_compared(flight):

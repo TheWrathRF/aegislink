@@ -4,6 +4,9 @@ Image messages carry the camera's altitude and heading but not its position, so 
 position up here by frame number. Positions are metres east/north of the first telemetry it
 received, which is all the compositor needs: it only uses differences between two poses. Track
 lists carry neither, so their whole pose comes from here too (`telemetry_pose`).
+
+While the GPS is taken to be spoofed, `fallback` holds the positions from optical flow
+(`spoof_detector.FlowPath`), and every position from here comes from it instead.
 """
 
 import bisect
@@ -20,6 +23,7 @@ class PoseHistory:
         self.frames = []        # increasing frame numbers
         self.positions = []     # (east, north) for each frame
         self.attitudes = []     # (alt, heading_deg) for each frame
+        self.fallback = None    # FlowPath while the GPS is rejected
 
     def add(self, telemetry):
         """Adds a telemetry message. The receiver passes only ones at least as new as the held
@@ -47,6 +51,7 @@ class PoseHistory:
         self.frames = []
         self.positions = []
         self.attitudes = []
+        self.fallback = None
 
     def copy(self):
         other = PoseHistory()
@@ -54,6 +59,7 @@ class PoseHistory:
         other.frames = list(self.frames)
         other.positions = list(self.positions)
         other.attitudes = list(self.attitudes)
+        other.fallback = self.fallback      # never changed once made
         return other
 
     def _around(self, frame):
@@ -70,8 +76,17 @@ class PoseHistory:
         return i, (frame - f0) / (f1 - f0)
 
     def position(self, frame):
-        """(east, north) at `frame`, interpolated between the held frames around it (telemetry
-        can be lost or skipped), or None outside the held frames."""
+        """(east, north) at `frame`: from the fallback when there is one, otherwise like
+        `gps_position`; None outside the held frames."""
+        if self.fallback is not None and self._around(frame) is not None:
+            position = self.fallback.position(frame)
+            if position is not None:
+                return position
+        return self.gps_position(frame)
+
+    def gps_position(self, frame):
+        """(east, north) at `frame` from the telemetry, interpolated between the held frames
+        around it (telemetry can be lost or skipped), or None outside the held frames."""
         around = self._around(frame)
         if around is None:
             return None

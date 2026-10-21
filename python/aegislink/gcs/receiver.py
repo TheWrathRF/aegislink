@@ -18,6 +18,7 @@ from aegislink.common import config, messages
 from aegislink.common.net import LinkReceiver, RateMeter
 from aegislink.gcs.ghost_tracks import GHOST, GhostTracks, semi_axes
 from aegislink.gcs.poses import PoseHistory
+from aegislink.gcs.spoof_detector import SpoofDetector
 from aegislink.uav.encoder import KEYFRAME_SIZE, PATCH_PAD, decode_image, image_size
 
 REPORT_INTERVAL_S = 0.25
@@ -112,14 +113,16 @@ class TrackLog:
     """The tracks as the station predicts them, one JSON object per line, 30 times a second: the
     UAV time, how long the foveated link has been silent, the origin of the ground frame
     (latitude, longitude), and per track its state, time since the last fix, mean, covariance
-    (xx, xy, yy) and the filtered position at the last fix (t, east, north)."""
+    (xx, xy, yy) and the filtered position at the last fix (t, east, north). `nav` is the
+    newest telemetry's frame, its GPS position, the position used for it and whether the GPS
+    spoofing alarm is on."""
 
     def __init__(self, path):
-        path = Path(path)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        self.file = path.open("w", encoding="utf-8", newline="\n")
+        self.path = Path(path)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.file = self.path.open("w", encoding="utf-8", newline="\n")
 
-    def write(self, t, silent_s, origin, estimates):
+    def write(self, t, silent_s, origin, estimates, nav=None):
         tracks = [{"id": e.id, "state": e.state, "tslf": round(e.tslf_s, 4),
                    "mean": [round(float(v), 3) for v in e.mean],
                    "cov": [_g(e.cov[0, 0]), _g(e.cov[0, 1]), _g(e.cov[1, 1])],
@@ -127,7 +130,7 @@ class TrackLog:
                            round(float(e.fix[2]), 3)]}
                   for e in estimates]
         line = {"t": round(t, 4), "silent": None if silent_s is None else round(silent_s, 3),
-                "origin": list(origin), "tracks": tracks}
+                "origin": list(origin), "tracks": tracks, "nav": nav}
         self.file.write(json.dumps(line, separators=(",", ":")) + "\n")
         # A scenario run may stop this process at any moment: every line is complete on disk.
         self.file.flush()
@@ -163,6 +166,7 @@ class GroundStation:
         self.track_log = None if track_log is None else TrackLog(track_log)
         self.next_log_s = None
         self.keyframe = None            # newest Keyframe
+        self.spoof = SpoofDetector()    # checks the GPS against the keyframes' optical flow
         self.patches = {}               # track id -> newest Patch
         self.full_frame = None          # newest FullFrameMsg (decoded only when shown)
         self.bad_messages = 0           # complete messages that did not decode
@@ -280,6 +284,9 @@ class GroundStation:
             if not _newer(body.frame, self.keyframe.msg.frame if self.keyframe else None):
                 return OLD
             self.keyframe = Keyframe(body, image)
+            self.spoof.add_keyframe(body.frame, image, body.alt_m, body.heading_deg,
+                                    self.poses.gps_position(body.frame))
+            self.poses.fallback = self.spoof.fallback
         elif msg_type == MsgType.FULL_FRAME:
             # Decoded only when shown, but its size is checked now.
             if image_size(body.image) != (config.FRAME_WIDTH, config.FRAME_HEIGHT):
@@ -307,6 +314,7 @@ class GroundStation:
         self.poses.clear()
         self.tracks_frame, self.tracks = None, []
         self.keyframe = None
+        self.spoof.clear()
         self.patches = {}
         self.ghosts.clear()
         self.unmeasured = None
@@ -344,8 +352,13 @@ class GroundStation:
         if self.next_log_s < now_s:
             self.next_log_s = now_s + TRACK_LOG_INTERVAL_S
         silent = None if self.last_fovea_s is None else now_s - self.last_fovea_s
+        frame = self.telemetry.frame
+        nav = {"frame": frame,
+               "gps": [round(float(v), 3) for v in self.poses.gps_position(frame)],
+               "used": [round(float(v), 3) for v in self.poses.position(frame)],
+               "alarm": self.spoof.alarm}
         self.track_log.write(self.uav_time(now_s), silent, self.poses.origin,
-                             self.ghost_estimates(now_s, path=False))
+                             self.ghost_estimates(now_s, path=False), nav)
 
     def stats(self, now_s, estimates=None):
         """The numbers the dashboard shows: rates over the last second, ages, and the ghost
@@ -375,6 +388,11 @@ class GroundStation:
             "ghost_tracks": len(ghosts),
             "max_tslf_s": max((e.tslf_s for e in ghosts), default=None),
             "max_ellipse_m2": max(areas, default=None),
+            "gps_alarm": self.spoof.alarm,
+            "gps_alarms": self.spoof.alarms,
+            "spoof_d2": self.spoof.d2,
+            "gps_speed": self.spoof.gps_speed(),
+            "flow_speed": self.spoof.flow_speed(),
         }
 
     def send_report_if_due(self, now_s):
