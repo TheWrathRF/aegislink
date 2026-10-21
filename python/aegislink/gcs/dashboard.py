@@ -135,9 +135,13 @@ def fovea_text(s):
     share = (f"{s['fovea_kbps'] / s['baseline_kbps']:.1%} of baseline"
              if s["baseline_kbps"] > 0 else "baseline silent")
     age = "none" if s["keyframe_age_s"] is None else f"{s['keyframe_age_s']:.1f} s old"
+    ghosts = f"filtered tracks {s['filtered_tracks']}, ghosts {s['ghost_tracks']}"
+    if s["ghost_tracks"]:
+        ghosts += (f"   TSLF up to {s['max_tslf_s']:.1f} s   largest 95 % ellipse "
+                   f"{s['max_ellipse_m2']:,.0f} m2")
     return (f"{s['fovea_kbps']:,.1f} kbps ({share})\n"
             f"telemetry {s['telemetry_hz']:.1f} Hz   tracks {s['tracks_hz']:.1f} Hz   "
-            f"patches {s['patches_per_s']:.1f}/s   keyframe {age}")
+            f"patches {s['patches_per_s']:.1f}/s   keyframe {age}\n{ghosts}")
 
 
 class Dashboard(QMainWindow):

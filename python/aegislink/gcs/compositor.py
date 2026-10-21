@@ -6,12 +6,18 @@ camera pose of the newest telemetry, and each piece is mapped into it with the c
 between its frame and the view's frame (`NadirCamera.motion_matrix`, one affine map for a nadir
 camera over flat ground). Positions come from the telemetry (`PoseHistory`); altitude and heading
 come with each image. Without a known position for either frame a piece is not moved.
+
+Over that go the tracks' Kalman filters (`ghost_tracks`): each track's predicted path, and for a
+GHOST track (no fix for a while) its 95 % ellipse and the time since its last fix. A GHOST track's
+box and patch move to where its filter predicts the vehicle now, so during a blackout the
+vehicles keep moving over the frozen background.
 """
 
 import cv2
 import numpy as np
 
 from aegislink.common import config
+from aegislink.gcs.ghost_tracks import GHOST, ellipse_points
 from aegislink.uav.camera import NadirCamera
 from aegislink.uav.encoder import KEYFRAME_SIZE, PATCH_PAD
 
@@ -21,6 +27,10 @@ W, H = config.FRAME_WIDTH, config.FRAME_HEIGHT
 # PATCH_PAD (8) around the box, so the vehicle itself stays opaque.
 FEATHER_PX = 6
 GREEN, AMBER = (0, 255, 0), (0, 200, 255)
+LIVE_COLOR, GHOST_COLOR = (255, 210, 90), (255, 80, 255)
+# A track's path starts this far from its centre, so that it never covers the vehicle (half a
+# truck's length plus a little).
+PATH_CLEARANCE_M = 4.5
 # A piece whose camera motion scales it beyond this (an altitude ratio, possible only from bad
 # telemetry) is not drawn: it would be meaningless, and slow to warp.
 MAX_SCALE = 4.0
@@ -71,6 +81,52 @@ def _view_boxes(view):
         corners = _apply(m, [(x1, y1), (x2, y1), (x1, y2), (x2, y2)])
         boxes.append((track, (*corners.min(axis=0), *corners.max(axis=0))))
     return boxes
+
+
+def _view_pose(view):
+    t = view.telemetry
+    return None if t is None else view.poses.pose(t.frame, t.alt_m, t.heading_deg)
+
+
+def _ghost_boxes(view_boxes, ghosts, view_pose):
+    """The boxes with each GHOST track's box moved, at its size, to its predicted position."""
+    result = []
+    for track, box in view_boxes:
+        e = ghosts.get(track.id)
+        if e is not None and e.state == GHOST and view_pose is not None:
+            u, v = CAMERA.ground_to_pixel(view_pose, e.mean)
+            du, dv = u - (box[0] + box[2]) / 2, v - (box[1] + box[3]) / 2
+            if np.isfinite(du) and np.isfinite(dv):
+                box = (box[0] + du, box[1] + dv, box[2] + du, box[3] + dv)
+        result.append((track, box))
+    return result
+
+
+def _ghost_label(e):
+    return f"{e.id} GHOST {e.tslf_s:.1f} s"
+
+
+def _draw_estimate(canvas, e, view_pose, out, labelled):
+    """The predicted path of one track; for a GHOST also its 95 % ellipse, and its label when it
+    has no box."""
+    w = canvas.shape[1]
+
+    def to_canvas(points):
+        pixels = _apply(out, CAMERA.ground_to_pixel(view_pose, points))
+        return np.round(np.clip(pixels, -10 * w, 10 * w)).astype(np.int32)
+
+    color = GHOST_COLOR if e.state == GHOST else LIVE_COLOR
+    ahead = e.path[np.linalg.norm(e.path - e.mean, axis=1) > PATH_CLEARANCE_M]
+    if len(ahead) >= 2:
+        cv2.polylines(canvas, [to_canvas(ahead)], False, color, 1, cv2.LINE_AA)
+    if e.state != GHOST:
+        return
+    ring = to_canvas(ellipse_points(e.mean, e.cov))
+    cv2.polylines(canvas, [ring], True, GHOST_COLOR, 2, cv2.LINE_AA)
+    if not labelled:
+        x, y = ring[np.argmin(ring[:, 1])]
+        cv2.putText(canvas, _ghost_label(e), (int(x) - 30, int(y) - 6), cv2.FONT_HERSHEY_SIMPLEX,
+                    0.5, GHOST_COLOR, 1, cv2.LINE_AA)
 
 
 def track_boxes(view, scale):
@@ -154,7 +210,9 @@ def render_fovea(view, size, boxes=True):
     else:
         canvas = np.zeros((h, w, 3), np.uint8)
 
-    view_boxes = _view_boxes(view)
+    view_pose = _view_pose(view)
+    ghosts = {e.id: e for e in view.ghosts}
+    view_boxes = _ghost_boxes(_view_boxes(view), ghosts, view_pose)
     for track, box in view_boxes:
         patch = view.patches.get(track.id)
         if patch is not None:
@@ -163,10 +221,16 @@ def render_fovea(view, size, boxes=True):
         for track, box in view_boxes:
             corners = np.clip(_apply(out, [box[:2], box[2:]]), -10 * w, 10 * w)
             (x1, y1), (x2, y2) = np.round(corners).astype(int)
-            color = GREEN if track.seen else AMBER
+            e = ghosts.get(track.id)
+            ghost = e is not None and e.state == GHOST
+            color = GHOST_COLOR if ghost else GREEN if track.seen else AMBER
             cv2.rectangle(canvas, (x1 - 2, y1 - 2), (x2 + 2, y2 + 2), color, 2)
-            cv2.putText(canvas, str(track.id), (x1, y1 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                        color, 1, cv2.LINE_AA)
+            cv2.putText(canvas, _ghost_label(e) if ghost else str(track.id), (x1, y1 - 6),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+        if view_pose is not None:
+            boxed = {track.id for track, _ in view_boxes}
+            for e in view.ghosts:
+                _draw_estimate(canvas, e, view_pose, out, e.id in boxed)
     return canvas
 
 

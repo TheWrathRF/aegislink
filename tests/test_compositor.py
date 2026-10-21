@@ -200,3 +200,62 @@ def test_extreme_poses_do_not_break_or_slow_the_view(alt, jump):
     start = time.perf_counter()
     out = compositor.render_fovea(view, (W, H))
     assert out.shape == (H, W, 3) and time.perf_counter() - start < 0.01
+
+
+def estimate(track_id, state, mean, cov, path=()):
+    from aegislink.gcs.ghost_tracks import Estimate
+    return Estimate(track_id, state, 2.5 if state == "GHOST" else 0.0, np.array(mean, float),
+                    np.array(cov, float), np.zeros(2), np.array(path, float).reshape(-1, 2),
+                    (0.0, 0.0, 0.0))
+
+
+def test_a_ghost_moves_its_box_and_patch_to_the_predicted_position():
+    box = (600, 300, 640, 320)
+    crop = (592, 292, 648, 328)
+    view = view_with_patch(crop, box)
+    # The box's centre is pixel (620, 310); the filter now puts the vehicle 10 m east of it.
+    centre = CAMERA.pixel_to_ground(Pose(0, 0, 150, 0), (620, 310))
+    view.ghosts = [estimate(3, "GHOST", centre + (10.0, 0.0), np.eye(2) * 0.5)]
+    out = compositor.render_fovea(view, (W, H), boxes=False)
+    shift = 10.0 / CAMERA.metres_per_pixel(150.0)
+    assert tuple(out[310, round(620 + shift)]) == (0, 0, 255)
+    assert out[310, 620].max() == 0
+    # Still LIVE: the patch stays on its box.
+    view.ghosts = [estimate(3, "LIVE", centre + (10.0, 0.0), np.eye(2) * 0.5)]
+    out = compositor.render_fovea(view, (W, H), boxes=False)
+    assert tuple(out[310, 620]) == (0, 0, 255)
+
+
+def colour_mask(image, colour, tolerance=40):
+    """Pixels close to `colour` (lines are anti-aliased)."""
+    return np.all(np.abs(image.astype(int) - colour) <= tolerance, axis=2)
+
+
+def test_ellipse_path_and_label_are_drawn_where_the_filter_says():
+    view = View(telemetry(5, 0.0, 0.0), 5, [], None, {}, history(telemetry(5, 0.0, 0.0)))
+    cov = np.diag([16.0, 4.0])      # semi-axes sqrt(5.991 x 16) = 9.8 m east, 4.9 m north
+    view.ghosts = [estimate(8, "GHOST", (0.0, 0.0), cov, path=[(5.0, 0.0), (10.0, 0.0)])]
+    out = compositor.render_fovea(view, (W, H))
+    mpp = CAMERA.metres_per_pixel(150.0)
+    ring = colour_mask(out, compositor.GHOST_COLOR)
+    rows, cols = np.nonzero(ring)
+    assert cols.max() - CAMERA.cx == pytest.approx(9.8 / mpp, abs=2)
+    assert CAMERA.cy - rows.min() > 4.9 / mpp + 5     # the label sits above the ellipse
+    # The path runs from 5 to 10 m east along the centre row.
+    column = out[357:363, round(CAMERA.cx + 7.5 / mpp)].astype(int)   # anti-aliased: dimmer
+    assert column[:, 0].max() > 150 and column[:, 2].max() > 150 and column[:, 1].max() < 100
+    # LIVE: no ellipse, and the path only from 4.5 m out, clear of the vehicle.
+    path = [(d, 0.0) for d in range(1, 21)]
+    view.ghosts = [estimate(8, "LIVE", (0.0, 0.0), cov, path=path)]
+    out = compositor.render_fovea(view, (W, H))
+    live = colour_mask(out, compositor.LIVE_COLOR)
+    assert not colour_mask(out, compositor.GHOST_COLOR).any()
+    _, cols = np.nonzero(live)
+    assert cols.min() - CAMERA.cx == pytest.approx(5 / mpp, abs=2)
+    assert cols.max() - CAMERA.cx == pytest.approx(20 / mpp, abs=2)
+
+
+def test_ghosts_are_not_drawn_without_a_view_pose():
+    view = View(None, None, [], None, {}, PoseHistory())
+    view.ghosts = [estimate(1, "GHOST", (0.0, 0.0), np.eye(2))]
+    assert compositor.render_fovea(view, (320, 180)).max() == 0

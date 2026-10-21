@@ -54,14 +54,14 @@ def deliver(station, msg_type, body, now_s=None, link="fovea"):
         station._receive(link, datagram, now_s)
 
 
-def fill(station, frame=40):
+def fill(station, frame=40, now_s=None):
     """One frame of everything: telemetry, a track, its red patch, a keyframe, a baseline."""
     lat, lon = geo.enu_to_latlon(0.0, 0.0, (46.0, 7.0))
     deliver(station, MsgType.TELEMETRY, messages.encode_telemetry(
-        messages.TelemetryMsg(frame, float(lat), float(lon), 150, 10, 0, 0, 0)))
+        messages.TelemetryMsg(frame, float(lat), float(lon), 150, 10, 0, 0, 0)), now_s)
     box = (600, 300, 680, 340)
     deliver(station, MsgType.TRACKS, messages.encode_tracks(
-        frame, [messages.TrackBox(1, box, True)]))
+        frame, [messages.TrackBox(1, box, True)]), now_s)
     patch = np.full((56, 96, 3), (0, 0, 255), np.uint8)
     deliver(station, MsgType.ROI_PATCH, messages.encode_patch(messages.PatchMsg(
         frame, 150, 0, 1, (592, 292, 688, 348), cv2.imencode(".webp", patch)[1].tobytes())))
@@ -107,6 +107,19 @@ def test_window_draws_both_views_within_a_frame_time(app, station):
     assert "frame time p95" in window.status.text()
     s = window.clock.summary()
     assert s["frames"] == 120 and s["work_p95_ms"] < 1000 / 60
+    window.close()
+
+
+def test_a_ghost_is_drawn_and_counted_while_the_link_is_silent(app, station):
+    fill(station, now_s=time.monotonic() - 1.0)
+    window = Dashboard(ReceiverThread(station))
+    window.show()
+    window.draw_frame()
+    ghost = np.all(np.abs(window.fovea_view._pixels.astype(int) - (255, 80, 255)) <= 40, axis=2)
+    assert ghost.sum() > 100        # its box, ellipse and label
+    window.update_status()
+    text = window.fovea_hud.text()
+    assert "ghosts 1" in text and "TSLF up to 1." in text and "m2" in text
     window.close()
 
 
