@@ -362,7 +362,9 @@ with the camera's, ground metres do not.
 - **States**: LIVE while fixes arrive; GHOST when the last fix is more than 150 ms old (the
   filter only predicts and its ellipse grows); LOST, and forgotten, when the last fix is 10 s old
   or the 95 % ellipse's longer semi-axis exceeds 100 m. A track the UAV stopped listing stays
-  until then.
+  until then. At most 64 tracks are kept: when full, a new id replaces the track with the oldest
+  fix, or is refused if every track was fixed at that same moment (a forged track list of 255
+  new ids cannot fill the station with filters that every drawn frame works through).
 - **Estimates** for a moment `t`: state, time since the last fix (TSLF), mean, 2 x 2 position
   covariance, velocity, and the path predicted 0.1 s apart over the next 2 s.
 - **The 95 % ellipse**: a position lies inside when its squared Mahalanobis distance from the

@@ -8,7 +8,9 @@ their frame are measurements; a coasting box is the UAV tracker's own guess.
 
 A track is LIVE while measurements arrive, GHOST when the last one (the last fix) is more than
 GHOST_AFTER_S old: the filter only predicts and its ellipse grows. It is LOST, and forgotten, when
-the last fix is LOST_AFTER_S old or the ellipse has grown past MAX_SEMI_AXIS_M.
+the last fix is LOST_AFTER_S old or the ellipse has grown past MAX_SEMI_AXIS_M. At most MAX_TRACKS
+are kept: a track list can hold 255 ids, and a forged one must not fill the station with filters
+that every drawn frame has to work through.
 """
 
 import math
@@ -23,6 +25,9 @@ from aegislink.uav.camera import NadirCamera
 LIVE, GHOST = "LIVE", "GHOST"
 GHOST_AFTER_S = 0.15
 LOST_AFTER_S = 10.0
+# Far more than the UAV lists at once (a few vehicles in view, plus the ones it dropped within
+# the last LOST_AFTER_S).
+MAX_TRACKS = 64
 MAX_SEMI_AXIS_M = 100.0
 # The 95 % point of the chi-square distribution with 2 degrees of freedom: a position whose
 # squared Mahalanobis distance is below it lies inside the 95 % ellipse.
@@ -122,6 +127,13 @@ class GhostTracks:
         r = (float(r[0][0]), float(r[0][1]), float(r[1][1]))
         track = self.tracks.get(track_id)
         if track is None:
+            if len(self.tracks) >= MAX_TRACKS:
+                # A real track is measured every frame, so the oldest fix is the least useful;
+                # one fixed at this very moment is never replaced (the new id is refused).
+                oldest = min(self.tracks, key=lambda i: self.tracks[i].fix[0])
+                if not self.tracks[oldest].fix[0] < t:
+                    return False
+                del self.tracks[oldest]
             kf = KalmanFilter(self.model, self.q)
             kf.init(float(position[0]), float(position[1]), r, START_SPEED_STD, START_ACCEL_STD)
             self.tracks[track_id] = GhostTrack(kf, t)
@@ -163,14 +175,16 @@ class GhostTracks:
             tslf = max(0.0, t - track.fix[0])
             if tslf > LOST_AFTER_S or semi_axes(cov)[0] > MAX_SEMI_AXIS_M:
                 continue
+            state = np.array(kf.state)
             points = np.empty((0, 2))
             if path:
-                steps = np.arange(1, round(PATH_S / PATH_STEP_S) + 1) * PATH_STEP_S
-                points = np.array([kf.predicted(dt).state[:2] for dt in steps])
-            state = kf.state
+                # The predicted mean moves as x + v dt (+ a dt^2 / 2): no filter copies needed.
+                dt = np.arange(1, round(PATH_S / PATH_STEP_S) + 1)[:, None] * PATH_STEP_S
+                points = state[:2] + state[2:4] * dt
+                if len(state) == 6:
+                    points = points + state[4:6] * dt ** 2 / 2
             result.append(Estimate(track_id, LIVE if tslf <= GHOST_AFTER_S else GHOST, tslf,
-                                   np.array(state[:2]), cov, np.array(state[2:4]), points,
-                                   track.fix))
+                                   state[:2], cov, state[2:4], points, track.fix))
         return result
 
 

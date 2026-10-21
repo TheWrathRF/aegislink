@@ -168,3 +168,30 @@ def test_truth_stays_inside_the_ellipse_in_90_to_98_percent_of_blackout_frames(t
     share = float(np.mean(inside))
     assert len(inside) > 7 * 150 * 60
     assert 0.90 <= share <= 0.98, share
+
+
+def test_at_most_max_tracks_and_the_oldest_fix_makes_room():
+    tracks = GhostTracks()
+    for i in range(gt.MAX_TRACKS):
+        assert tracks.measure(i, 1.0 + i / 1000, (float(i), 0.0), r_of(0.2))
+    # Full: a new id replaces the track with the oldest fix (id 0)...
+    assert tracks.measure(500, 2.0, (0.0, 0.0), r_of(0.2))
+    assert 0 not in tracks.tracks and 500 in tracks.tracks
+    assert len(tracks.tracks) == gt.MAX_TRACKS
+    # ...but never one fixed at the same moment: then the new id is refused.
+    for i in range(1, gt.MAX_TRACKS):
+        tracks.measure(i, 2.0, (float(i), 0.0), r_of(0.2))
+    assert not tracks.measure(501, 2.0, (0.0, 0.0), r_of(0.2))
+    assert 501 not in tracks.tracks and len(tracks.tracks) == gt.MAX_TRACKS
+
+
+@pytest.mark.parametrize("model", ["cv", "ca"])
+def test_path_is_the_filters_own_prediction(model):
+    tracks = GhostTracks(model)
+    for i in range(60):
+        tracks.measure(1, i / 30, (8.0 * i / 30 + 0.5 * (i / 30) ** 2, 3.0), r_of(0.05))
+    (e,) = tracks.estimates(2.2)
+    kf = tracks.tracks[1].kf
+    expected = [kf.predicted(2.2 - tracks.tracks[1].t + dt).state[:2]
+                for dt in np.arange(1, 21) * gt.PATH_STEP_S]
+    assert e.path == pytest.approx(np.array(expected), abs=1e-9)

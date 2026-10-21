@@ -339,3 +339,40 @@ def test_telemetry_pose_interpolates_the_heading_the_short_way(station):
     assert pose.alt == pytest.approx(110.0) and pose.heading_deg == pytest.approx(0.0, abs=1e-9)
     assert station.poses.telemetry_pose(12).heading_deg == pytest.approx(10.0)
     assert station.poses.telemetry_pose(13) is None
+
+
+def test_forged_track_lists_cannot_grow_the_filters_without_bound(station):
+    """A track list may hold 255 ids; forged lists with fresh ids at the held frame would each
+    add 255 filters, and every drawn frame works through all of them."""
+    from aegislink.gcs.ghost_tracks import MAX_TRACKS
+    # On the snapshot's own clock, so that the forged tracks are still alive when drawn.
+    now = time.monotonic()
+    deliver(station, MsgType.TELEMETRY, telemetry_at(30), now_s=now)
+    for i in range(20):
+        forged = [messages.TrackBox(1000 + 255 * i + k, centre_box(dx=k % 50, dy=k // 50), True)
+                  for k in range(255)]
+        deliver(station, MsgType.TRACKS, messages.encode_tracks(30, forged), now_s=now)
+    assert len(station.ghosts.tracks) <= MAX_TRACKS
+    receiver = ReceiverThread(station)
+    start = time.perf_counter()
+    for _ in range(10):
+        view, _, stats = receiver.snapshot()
+        compositor.render_fovea(view, (1280, 720))
+    # Unbounded, these 5,100 filters take over half a second a frame; capped, about 13 ms here.
+    # The bound is loose for slower CI machines.
+    assert (time.perf_counter() - start) / 10 < 0.050
+    assert stats["filtered_tracks"] == len(view.ghosts) == MAX_TRACKS
+
+
+def test_a_real_track_survives_a_flood_of_forged_ids(station):
+    deliver(station, MsgType.TELEMETRY, telemetry_at(30), now_s=1.0)
+    deliver(station, MsgType.TELEMETRY, telemetry_at(31), now_s=1.03)
+    deliver(station, MsgType.TRACKS, messages.encode_tracks(
+        31, [messages.TrackBox(7, centre_box(), True)]), now_s=1.03)
+    forged = [messages.TrackBox(100 + k, centre_box(dx=k), True) for k in range(255)]
+    deliver(station, MsgType.TRACKS, messages.encode_tracks(30, forged), now_s=1.04)  # OLD: ignored
+    deliver(station, MsgType.TELEMETRY, telemetry_at(32), now_s=1.06)
+    deliver(station, MsgType.TRACKS, messages.encode_tracks(
+        32, [messages.TrackBox(7, centre_box(), True)] + forged[:200]), now_s=1.06)
+    # The real track has the newest fix, so it is not the one replaced.
+    assert 7 in station.ghosts.tracks

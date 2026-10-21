@@ -347,12 +347,13 @@ class GroundStation:
         self.track_log.write(self.uav_time(now_s), silent, self.poses.origin,
                              self.ghost_estimates(now_s, path=False))
 
-    def stats(self, now_s):
+    def stats(self, now_s, estimates=None):
         """The numbers the dashboard shows: rates over the last second, ages, and the ghost
-        tracks."""
+        tracks (from `estimates` when the caller has them for `now_s` already)."""
         rate = {t: self.message_rate[t].rate(now_s) for t in MsgType}
-        t = self.uav_time(now_s)
-        estimates = [] if t is None else self.ghosts.estimates(t, path=False)
+        if estimates is None:
+            t = self.uav_time(now_s)
+            estimates = [] if t is None else self.ghosts.estimates(t, path=False)
         ghosts = [e for e in estimates if e.state == GHOST]
         areas = [math.pi * a * b for a, b in (semi_axes(e.cov) for e in ghosts)]
         keyframe_age = None
@@ -429,4 +430,5 @@ class ReceiverThread:
         with self.lock:
             s = self.station
             now = time.monotonic()
-            return s.view(now), s.full_frame, s.stats(now)
+            view = s.view(now)
+            return view, s.full_frame, s.stats(now, view.ghosts)
