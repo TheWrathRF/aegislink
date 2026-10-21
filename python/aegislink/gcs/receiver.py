@@ -27,9 +27,13 @@ TRACK_LOG_INTERVAL_S = 1 / config.FPS
 FOVEA_TIMEOUT_US = 4_000_000
 # Sent the moment they are captured, so their delay is the link's delay.
 CONTROL_TYPES = {MsgType.TELEMETRY, MsgType.TRACKS}
-# A frame number this far below the held one means the UAV started again (or the held one was
-# forged): it replaces the held one instead of being ignored as old.
-RESTART_FRAMES = 10 * config.FPS
+# Telemetry whose frame number jumps (more than JUMP_FRAMES below the held one: the UAV started
+# again; or further ahead than the UAV can be by now) is followed only once JUMP_CONFIRM
+# telemetry messages in a row continue the jump, so one forged packet cannot reset the station.
+JUMP_FRAMES = 10 * config.FPS
+JUMP_CONFIRM = 30
+# How far a frame may be ahead of the UAV clock: arrival jitter (the UAV never runs faster).
+AHEAD_FRAMES = config.FPS
 
 USED, OLD, BAD = "used", "old", "bad"
 # Altitudes outside this range (and any value that is not finite) cannot be drawn: the camera
@@ -37,16 +41,8 @@ USED, OLD, BAD = "used", "old", "bad"
 MIN_ALT_M, MAX_ALT_M = 1.0, 10_000.0
 
 
-def _newer(frame, held):
-    return held is None or frame >= held or held - frame > RESTART_FRAMES
-
-
 def _sane_pose(alt, heading_deg):
     return MIN_ALT_M <= alt <= MAX_ALT_M and math.isfinite(heading_deg)
-
-
-def _restarted(frame, held):
-    return held is not None and held - frame > RESTART_FRAMES
 
 
 @dataclass
@@ -158,6 +154,7 @@ class GroundStation:
 
         self.telemetry = None           # newest TelemetryMsg
         self.telemetry_arrived_s = None
+        self.jump = None                # (frame, count) of telemetry that jumps, until confirmed
         self.poses = PoseHistory()      # positions of the recent frames
         self.tracks_frame = None
         self.tracks = []                # newest list of TrackBox
@@ -231,30 +228,60 @@ class GroundStation:
                 frame = body.frame if message.type == MsgType.TELEMETRY else body[0]
                 self.measurement.frames[message.type].add(frame)
 
+    def _plausible(self, frame, now_s):
+        """Whether `frame` fits the held telemetry: at most JUMP_FRAMES older, and not ahead of
+        where the UAV clock says the UAV can be by now. Anything fits before any telemetry."""
+        if self.telemetry is None:
+            return True
+        return (self.telemetry.frame - JUMP_FRAMES <= frame
+                <= self.uav_time(now_s) * config.FPS + AHEAD_FRAMES)
+
+    def _newer(self, frame, held, now_s):
+        """Whether `frame` replaces the held one of its kind. A held frame that no longer fits
+        the telemetry (forged, or from before a restart) gives way to any that does."""
+        if not self._plausible(frame, now_s):
+            return False
+        if held is None or frame >= held:
+            return True
+        if self.telemetry is None:
+            return held - frame > JUMP_FRAMES
+        return not self._plausible(held, now_s)
+
+    def _jump_confirmed(self, frame):
+        """Counts telemetry that continues a jump; True for the JUMP_CONFIRM-th in a row."""
+        follows = self.jump is not None and 0 < frame - self.jump[0] <= JUMP_FRAMES
+        count = self.jump[1] + 1 if follows else 1
+        self.jump = None if count >= JUMP_CONFIRM else (frame, count)
+        return count >= JUMP_CONFIRM
+
     def _apply(self, msg_type, body, now_s=None):
         """Keeps the body if it is newer than what is held: USED, OLD (ignored) or BAD."""
+        now_s = time.monotonic() if now_s is None else now_s
         if msg_type in (MsgType.TELEMETRY, MsgType.ROI_PATCH, MsgType.BG_KEYFRAME):
             if not _sane_pose(body.alt_m, body.heading_deg):
                 return BAD
         if msg_type == MsgType.TELEMETRY:
             held = self.telemetry.frame if self.telemetry else None
+            if held is not None and not self._plausible(body.frame, now_s):
+                if not self._jump_confirmed(body.frame):
+                    return OLD
+                if body.frame < held:       # the UAV started again
+                    self._forget()
             # The UAV sends one telemetry per frame, so the held frame again is a copy (a replay
             # would turn the UAV clock back to when the original arrived).
-            if not _newer(body.frame, held) or body.frame == held:
+            elif held is not None and body.frame <= held:
                 return OLD
-            if _restarted(body.frame, held):
-                self._forget()
+            else:
+                self.jump = None            # the stream goes on: a pending jump was forged
             self.telemetry = body
-            self.telemetry_arrived_s = time.monotonic() if now_s is None else now_s
+            self.telemetry_arrived_s = now_s
             self.poses.add(body)
             if self.unmeasured is not None:
                 self._measure(*self.unmeasured)
         elif msg_type == MsgType.TRACKS:
             frame, tracks = body
-            if not _newer(frame, self.tracks_frame):
+            if not self._newer(frame, self.tracks_frame, now_s):
                 return OLD
-            if _restarted(frame, self.tracks_frame):
-                self._forget()
             self.tracks_frame, self.tracks = frame, tracks
             self._measure(frame, tracks)
             ids = {t.id for t in tracks}
@@ -276,15 +303,17 @@ class GroundStation:
             old = self.patches.get(body.track_id)
             # Only for a track in the newest list (sent just before it), so patches stay bounded.
             if (body.track_id not in {t.id for t in self.tracks}
-                    or not _newer(body.frame, old.msg.frame if old else None)):
+                    or not self._newer(body.frame, old.msg.frame if old else None, now_s)):
                 return OLD
             self.patches[body.track_id] = Patch(body, image)
         elif msg_type == MsgType.BG_KEYFRAME:
+            # Checked before decoding: a keyframe also costs an optical-flow pass.
+            if not self._newer(body.frame, self.keyframe.msg.frame if self.keyframe else None,
+                               now_s):
+                return OLD
             image = decode_image(body.image, gray=True, size=KEYFRAME_SIZE)
             if image is None:
                 return BAD
-            if not _newer(body.frame, self.keyframe.msg.frame if self.keyframe else None):
-                return OLD
             self.keyframe = Keyframe(body, image)
             self.spoof.add_keyframe(body.frame, image, body.alt_m, body.heading_deg,
                                     self.poses.gps_position(body.frame))
@@ -293,7 +322,8 @@ class GroundStation:
             # Decoded only when shown, but its size is checked now.
             if image_size(body.image) != (config.FRAME_WIDTH, config.FRAME_HEIGHT):
                 return BAD
-            if not _newer(body.frame, self.full_frame.frame if self.full_frame else None):
+            if not self._newer(body.frame, self.full_frame.frame if self.full_frame else None,
+                               now_s):
                 return OLD
             self.full_frame = body
         return USED
@@ -313,6 +343,7 @@ class GroundStation:
         """Drops the foveated state of an earlier run of the UAV."""
         self.telemetry = None
         self.telemetry_arrived_s = None
+        self.jump = None
         self.poses.clear()
         self.tracks_frame, self.tracks = None, []
         self.keyframe = None

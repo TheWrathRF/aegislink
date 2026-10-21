@@ -57,8 +57,9 @@ def test_view_holds_the_positions_of_recent_frames_until_a_restart(station):
     view = station.view()
     assert view.telemetry.frame == 401 and view.tracks == [] and view.patches == {}
     assert view.poses.position(401) == pytest.approx((0.0, 11.13), abs=0.01)
-    deliver(station, MsgType.TELEMETRY, messages.encode_telemetry(
-        messages.TelemetryMsg(0, 46.0, 7.0, 150, 10, 0, 0, 0)))     # the UAV started again
+    for frame in range(30):                                         # the UAV started again
+        deliver(station, MsgType.TELEMETRY, messages.encode_telemetry(
+            messages.TelemetryMsg(frame, 46.0, 7.0, 150, 10, 0, 0, 0)))
     assert station.view().poses.position(401) is None
     assert view.poses.position(401) is not None     # the earlier view is a copy
 
@@ -142,12 +143,48 @@ def test_images_with_a_wrong_size_are_dropped_before_decoding(station):
     compositor.render_fovea(station.view(), (640, 360))
 
 
-def test_a_restarted_uav_is_followed(station):
-    for frame in (500, 0, 1):
-        deliver(station, MsgType.TELEMETRY, messages.encode_telemetry(
-            messages.TelemetryMsg(frame, 0, 0, 150, 0, 0, 0, 0)))
+def test_a_restarted_uav_is_followed_once_30_telemetry_messages_confirm_it(station):
+    deliver(station, MsgType.TELEMETRY, telemetry_at(500))
+    for frame in range(29):
+        deliver(station, MsgType.TELEMETRY, telemetry_at(frame))
         deliver(station, MsgType.TRACKS, messages.encode_tracks(frame, []))
-    assert station.telemetry.frame == 1 and station.tracks_frame == 1
+    assert station.telemetry.frame == 500 and station.tracks_frame is None
+    deliver(station, MsgType.TELEMETRY, telemetry_at(29))
+    deliver(station, MsgType.TRACKS, messages.encode_tracks(29, []))
+    assert station.telemetry.frame == 29 and station.tracks_frame == 29
+
+
+def test_one_forged_frame_jump_changes_nothing(station):
+    for frame in range(600, 630):
+        deliver(station, MsgType.TELEMETRY, telemetry_at(frame), now_s=frame / 30)
+        deliver(station, MsgType.TRACKS, messages.encode_tracks(
+            frame, [messages.TrackBox(9, centre_box(), True)]), now_s=frame / 30)
+    for forged in (0, 100, 0xFFFFFFF0):     # far below (a "restart") and far ahead
+        deliver(station, MsgType.TELEMETRY, telemetry_at(forged), now_s=21.0)
+        deliver(station, MsgType.TRACKS, messages.encode_tracks(forged, []), now_s=21.0)
+    for frame in range(630, 640):
+        deliver(station, MsgType.TELEMETRY, telemetry_at(frame), now_s=frame / 30)
+        deliver(station, MsgType.TRACKS, messages.encode_tracks(
+            frame, [messages.TrackBox(9, centre_box(), True)]), now_s=frame / 30)
+    assert station.telemetry.frame == 639 and station.tracks_frame == 639
+    assert 9 in station.ghosts.tracks and station.poses.position(600) is not None
+
+
+def test_real_telemetry_in_between_cancels_a_restart(station):
+    deliver(station, MsgType.TELEMETRY, telemetry_at(600))
+    for i in range(40):     # forged low frames, each followed by the real stream
+        deliver(station, MsgType.TELEMETRY, telemetry_at(i))
+        deliver(station, MsgType.TELEMETRY, telemetry_at(601 + i))
+    assert station.telemetry.frame == 640
+
+
+def test_after_a_long_silence_the_stream_goes_on_without_a_restart(station):
+    deliver(station, MsgType.TELEMETRY, telemetry_at(600), now_s=20.0)
+    origin = station.poses.origin
+    for frame in range(1200, 1230):         # 20 s later
+        deliver(station, MsgType.TELEMETRY, telemetry_at(frame, lat=46.001), now_s=frame / 30)
+    assert station.telemetry.frame == 1229
+    assert station.poses.origin == origin and station.poses.position(600) is not None
 
 
 def test_one_forged_frame_number_does_not_freeze_the_tracks(station):
@@ -295,7 +332,8 @@ def test_a_restarted_uav_clears_the_ghost_tracks(station):
     deliver(station, MsgType.TRACKS, messages.encode_tracks(
         900, [messages.TrackBox(1, centre_box(), True)]), now_s=1.0)
     assert station.ghosts.tracks
-    deliver(station, MsgType.TELEMETRY, telemetry_at(0), now_s=1.1)
+    for frame in range(30):
+        deliver(station, MsgType.TELEMETRY, telemetry_at(frame), now_s=1.1)
     assert station.ghosts.tracks == {}
     assert station.stats(1.2)["ghost_tracks"] == 0
 

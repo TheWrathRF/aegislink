@@ -210,6 +210,17 @@ def test_the_station_uses_the_gps_again_once_it_agrees(station, flight):
     assert station.poses.position(450) == station.poses.gps_position(450)
 
 
+def test_one_forged_restart_does_not_end_the_alarm(station, flight):
+    jump = lambda t: (0.0, 50.0) if t >= 5.0 else (0.0, 0.0)   # noqa: E731
+    fly_station(station, flight[:41], jump, 20.0)
+    assert station.spoof.alarm
+    forged = messages.encode_telemetry(messages.TelemetryMsg(0, 46.0, 7.0, 150.0, 10.0, 0, 0, 0))
+    for datagram in Packetizer(first_msg_id=10**6).packetize(MsgType.TELEMETRY, 0, forged):
+        station._receive("fovea", datagram, 20.1)
+    fly_station(station, flight[41:81], jump, 40.0)
+    assert station.spoof.alarm and station.spoof.alarms == 1
+
+
 def test_keyframes_too_far_apart_are_not_compared(flight):
     detector = SpoofDetector()
     (f0, a, pa), (f1, b, pb) = flight[0], flight[int(spoof_detector.MAX_PAIR_S * 2) + 1]

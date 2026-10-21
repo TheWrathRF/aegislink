@@ -329,8 +329,15 @@ on Windows a send to a closed port makes the next receive on the same socket fai
   counted): telemetry, the track list, the keyframe and one patch per track of the newest list.
   Telemetry of the held frame is ignored as well: the UAV sends one per frame, and a copy put on
   the link again would turn the UAV clock back.
-  A frame number more than 10 s (300 frames) below the held one is taken as a new run of the UAV
-  (or the held one as forged): telemetry or tracks from it reset the foveated state.
+  A frame must fit the held telemetry: at most 10 s (300 frames) below it, and at most 1 s ahead
+  of where the UAV clock (below) says the UAV can be by now; anything else is ignored, and a
+  held frame of another kind that no longer fits gives way to one that does. Telemetry that does
+  not fit is a jump: more than 10 s below means the UAV started again, further ahead a forged
+  frame (after a real blackout the frames fit the clock, which ran on). A jump is followed only
+  when 30 telemetry messages in a row continue it (each newer than the last, by at most 10 s);
+  a backward one then resets the foveated state. Telemetry that fits cancels a pending jump, so
+  one forged packet, or a few among the real stream, change nothing, and a real restart is
+  followed after about 1 s. Before the first telemetry everything fits.
 - Images must have their expected size in their header before they are decoded: a patch the
   size of its box (inside the image), a keyframe 480 x 270, a baseline frame 1280 x 720 (checked
   on arrival, decoded once when first shown). Anything else, and any body that does not decode,

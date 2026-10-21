@@ -174,7 +174,10 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
   (cleared by a restart, the view a copy), patches dropped with their track, bad patch boxes and
   sizes and undecodable bodies counted, reports 4 times per second; a u64 timestamp does not stop
   the reports; oversize or wrong-size patches, keyframes and baseline frames dropped before
-  decoding; a restarted UAV (frame 500, then 0) and a forged frame 0xFFFFFFFF are followed; older
+  decoding; a restarted UAV (frame 500, then 0) is followed on the 30th telemetry message of its
+  new run and not before; one forged frame jump (far below or far ahead) changes nothing, real
+  telemetry in between cancels a pending restart, after a 20 s silence the stream goes on
+  without a reset; a forged track frame 0xFFFFFFFF before any telemetry does not freeze; older
   messages not counted; patches only for listed tracks; the dashboard's numbers; the receiver
   thread receives, reports and stops; impossible altitudes (0, negative, NaN, infinite, 1e30)
   and headings (NaN, infinite) in telemetry, patches and keyframes dropped; a patch much larger
@@ -192,7 +195,8 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
   true position while the GPS ends 100 m off; the flow path interpolates and carries on; pairs
   the flow cannot follow, or too far apart, decide nothing; a repeated keyframe changes nothing.
   The station: with the GPS 50 m off, every position the view uses comes from the flow, the
-  stats and the track log show the alarm, and it uses the GPS again once it agrees. Removing
+  stats and the track log show the alarm, it uses the GPS again once it agrees, and one forged
+  telemetry with an old frame number (a fake restart) does not end the alarm. Removing
   the outlier rule or tying the chain to a suspect keyframe makes these tests fail.
 - `tests/test_compositor.py`: positions relative to the first telemetry, interpolated, 10 s
   kept; a dot on the background lands where the camera model puts its ground point after a
