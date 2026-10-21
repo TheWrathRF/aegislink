@@ -1,11 +1,12 @@
 # Architecture
 
 AegisLink's processes talk over UDP using one wire protocol, implemented in C++ (`cpp/core`) and
-used from Python through pybind11 (`aegislink._core`).
+used from Python through pybind11 (`aegislink._core`), which also holds the Kalman filter that the
+ground station follows its tracks with.
 
 ## Layout
-- `cpp/core/`: the `aegis_core` static library (protocol, CRC, reassembler); headers in
-  `include/aegis/`.
+- `cpp/core/`: the `aegis_core` static library (protocol, CRC, reassembler, Kalman filter);
+  headers in `include/aegis/`.
 - `cpp/proxy/`: `ew_chaos_proxy`, the link simulator. Everything but `main.cpp` is the
   `aegis_proxy` static library, so the tests can link it.
 - `cpp/bindings/aegis_core.cpp`: the pybind11 module `aegislink._core`.
@@ -16,8 +17,10 @@ used from Python through pybind11 (`aegislink._core`).
   metres to latitude/longitude; `tools/loopback_check.py` sends messages over loopback UDP and
   checks that they arrive intact; `tools/link_meter.py` measures a proxy link; `uav/` is the UAV
   side (synthetic world, camera, flight, detector, tracker, encoder, scheduler, streamer);
-  `gcs/` the ground station (receiver, poses, compositor, dashboard, EW deck);
-  `tools/run_demo.py` starts the proxy, the ground station and the UAV together.
+  `gcs/` the ground station (receiver, poses, ghost tracks, compositor, dashboard, EW deck);
+  `tools/run_demo.py` starts the proxy, the ground station and the UAV together;
+  `tools/run_scenario.py` runs a scripted timeline from `scenarios/`, and `tools/evaluate.py`
+  scores the station's tracks against the ground truth.
 - `tests/`: pytest.
 - One `CMakeLists.txt` builds the C++ tests and the proxy (plain CMake), and the Python module
   plus the proxy when scikit-build-core runs it (`SKBUILD` is set, the tests are skipped, and the
@@ -99,10 +102,29 @@ datagram stays under the 1280-byte IPv6 minimum MTU and is never IP-fragmented.
   show up as an error on the next read.
 - On Windows the proxy calls `timeBeginPeriod(1)`; otherwise `select()` wakes up to 8.5 ms late.
 
+## Kalman filter (`cpp/core/include/aegis/kalman.hpp`)
+A linear Kalman filter for one target on flat ground, in metres, measured by its position only.
+
+- Two motion models: constant velocity, state `x, y, vx, vy`, driven by white-noise acceleration;
+  and constant acceleration, state `x, y, vx, vy, ax, ay`, driven by white-noise jerk. Both are
+  linear, so the plain filter is exact (no EKF needed). The axes are independent: per axis, `F`
+  moves each derivative into the lower ones (`1, dt, dt^2/2`), and over `dt` the noise of the
+  highest derivative adds `Q = q [dt^3/3 dt^2/2; dt^2/2 dt]` (constant velocity) or the 3 x 3
+  version from `dt^5/20` to `dt` (constant acceleration).
+- `update` takes a position with its 2 x 2 covariance, uses the Joseph form
+  `P = (I - KH) P (I - KH)^T + K R K^T` (it stays symmetric and positive definite despite
+  rounding) and returns the normalised innovation squared. With an innovation covariance that is
+  not positive definite it changes nothing and returns -1.
+- `predicted(dt)` returns a moved copy, so the ground station can draw any moment ahead without
+  touching the filter. A negative or non-finite `dt`, or a negative `q`, throws
+  `std::invalid_argument`.
+
 ## Python module `aegislink._core`
 Mirrors the C++ API: `crc32`, `MsgType` (IntEnum), `ParseError` (Enum), `Header`,
 `encode_packet`, `parse_packet` (returns a `Packet` with its own copy of the payload),
-`Packetizer`, `Reassembler` (`push`, `expire`, `pending`, `stats`), and the constants
+`Packetizer`, `Reassembler` (`push`, `expire`, `pending`, `stats`), `MotionModel` (Enum),
+`KalmanFilter` (`init`, `predict`, `update`, `predicted`, `copy`; `state`, `covariance` and
+`position_covariance` as lists), and the constants
 `HEADER_SIZE`, `MAX_PAYLOAD`, `MAX_DATAGRAM`, `MAX_MESSAGE`, `MAGIC`, `VERSION`. Byte arguments
 accept any contiguous buffer (bytes, bytearray, memoryview) without a copy; `std::invalid_argument`
 becomes `ValueError`.
@@ -183,9 +205,10 @@ Everything uses a local frame in metres: x = east, y = north, origin at the map 
   this frame, amber while coasting, with ids and a line of telemetry. `q` or Esc quits.
 - The ground-truth log (default `logs/ground_truth_<date>_<time>.jsonl`) holds a header line
   (seed, fps, map size, origin, followed vehicle, camera) and then one line per frame: the UAV pose
-  with latitude/longitude, pitch, roll and speed, and every vehicle near the view with its
-  position, heading, speed, `visible`, `in_frame` and pixel box. All of one line is from the same
-  instant.
+  with latitude/longitude, pitch, roll and speed, every vehicle near the view with its
+  position, heading, speed, `visible`, `in_frame` and pixel box, and `traffic`: the position of
+  every vehicle on the map by id, so a vehicle can still be scored after it leaves the view. All
+  of one line is from the same instant. About 3.9 MB per minute.
 - `TrackScore` compares tracks with the truth over a run: a vehicle fully in the image and at
   least 90 % visible counts, and is covered when a track matched this frame overlaps it (IoU >=
   0.3). A new id for a vehicle covered within the last 30 frames is an id switch; after a longer
@@ -282,7 +305,7 @@ reads receiver reports from its own socket. Sending and receiving use separate s
 on Windows a send to a closed port makes the next receive on the same socket fail.
 
 ## Ground station (`gcs/`)
-`python -m aegislink.gcs.main [--no-view] [--seconds S] [--warmup S] [--summary] [--snapshot PNG] [--direct] [--proxy-control PORT]`
+`python -m aegislink.gcs.main [--no-view] [--seconds S] [--warmup S] [--summary] [--snapshot PNG] [--direct] [--proxy-control PORT] [--motion-model cv|ca] [--track-log PATH]`
 
 - `GroundStation` (`gcs/receiver.py`) reads both links with `select()` and one `LinkReceiver`
   each. The foveated link's reassembler waits 4 s (a paced keyframe takes about 3 s at 50
@@ -303,12 +326,54 @@ on Windows a send to a closed port makes the next receive on the same socket fai
 - `PoseHistory` (`gcs/poses.py`) keeps the UAV's position for the last 300 telemetry messages
   (10 s at 30 Hz) by frame number, in metres east/north of the first telemetry received, interpolated between
   frames whose telemetry was lost. Images carry altitude and heading but no position, so the
-  compositor looks the position up here.
+  compositor looks the position up here. Track lists carry neither, so their whole pose
+  (`telemetry_pose`: altitude too, and the heading interpolated the short way round) comes from
+  here as well.
+- Every track list is handed to the ghost tracks (below) with the pose of its frame. A list that
+  arrives before the telemetry of its frame waits for it (only the newest one waits).
+- The station keeps a UAV clock: the newest telemetry's frame / 30 plus the time since it
+  arrived. It keeps running through a blackout, and the tracks are predicted to it. With
+  `--track-log` (in both modes) the predictions are written 30 times a second, one JSON line
+  each: the UAV time, how long the foveated link has been silent, the origin of the ground frame
+  (latitude, longitude of the first telemetry), and per track its state, time since the last fix,
+  mean, covariance (xx, xy, yy) and the filtered position at the last fix. Every line is flushed,
+  so a stopped process leaves only whole lines.
 - With `--no-view` the station runs in one loop and `--summary` prints one JSON line about the
   `--seconds` after `--warmup` seconds from the first foveated datagram: kbps per link and their
   ratio, telemetry and track messages per second and the share of frames that arrived, patches
   per second, keyframes, baseline frames per second, bad packets and messages, expired partial
   messages.
+
+### Ghost tracks (`gcs/ghost_tracks.py`)
+One Kalman filter (constant velocity by default, `--motion-model ca` for constant acceleration)
+per track id, in metres east/north of the first telemetry. Pixel motion mixes the vehicle's motion
+with the camera's, ground metres do not.
+
+- **Measurements**: only boxes that matched a detection in their frame (a coasting box is the UAV
+  tracker's own guess). The box centre goes to the ground through the camera pose of its frame
+  (`NadirCamera.pixel_to_ground_matrix`). Its covariance starts in pixels, from the detector's
+  edge noise (sigma 1 px + 4 % of the box size per edge, plus rounding; the centre averages two
+  edges), and is turned and scaled into metres with the same matrix. A box within two sigmas of
+  the image edge may have been cut there, which moves its centre inwards by up to half its size:
+  that axis gets `(size / 2)^2` more variance. A measurement not newer than the track's last one
+  is ignored.
+- **Time** is UAV time, frame / 30. A new track starts at its first position, still, with a
+  speed standard deviation of 10 m/s (and 3 m/s^2 for the acceleration).
+- **States**: LIVE while fixes arrive; GHOST when the last fix is more than 150 ms old (the
+  filter only predicts and its ellipse grows); LOST, and forgotten, when the last fix is 10 s old
+  or the 95 % ellipse's longer semi-axis exceeds 100 m. A track the UAV stopped listing stays
+  until then.
+- **Estimates** for a moment `t`: state, time since the last fix (TSLF), mean, 2 x 2 position
+  covariance, velocity, and the path predicted 0.1 s apart over the next 2 s.
+- **The 95 % ellipse**: a position lies inside when its squared Mahalanobis distance from the
+  mean is at most 5.991 (the 95 % point of the chi-square distribution with 2 degrees of
+  freedom); the semi-axes are `sqrt(5.991 x eigenvalue)` of the covariance.
+- **Process noise**, tuned on the simulated traffic: `q` = 3 m^2/s^3 (constant velocity) and 2
+  m^2/s^5 (constant acceleration). With every vehicle of a map measured at 30 Hz (0.25 m noise,
+  5 % misses) and blacked out for 5 s every 10 s, the true position lay inside the ellipse in
+  95.7 % and 96.4 % of the blackout frames. What it cannot foresee is a full stop: a car braking
+  from 12 m/s to 0 during a blackout leaves the ellipse after 2-3 s, so over a run with only a few
+  tracks the share depends on how many of them stopped.
 
 ### Compositor (`gcs/compositor.py`)
 Every piece arrives in the pixels of the frame it was captured in, and the view is drawn from
@@ -328,11 +393,18 @@ would scale by more than 4 (or less than 1/4) is not drawn.
   side, which lies 8 px (the pad) from the box. The patch's border fades into the background over
   6 px, inside the pad, so the vehicle stays opaque.
 - Boxes are drawn green when matched in their frame, amber while coasting, with their ids.
+- **Ghost tracks** are drawn into the view through the view's camera pose (not drawn without
+  one). A GHOST track's box and patch move, at their size, to where its filter predicts the
+  vehicle now, so during a blackout the vehicles keep driving over the frozen background. It is
+  drawn in magenta with its 95 % ellipse and a label with its id and TSLF (above the ellipse when
+  the track has no box). Every track's predicted path for the next 2 s is drawn from 4.5 m out
+  (half a truck plus a little), so it never covers the vehicle.
 
 ### Dashboard (`gcs/dashboard.py`, `gcs/ew_deck.py`)
 - PyQt6 with a dark Fusion palette and pyqtgraph plots. Top: the baseline and the foveated view
   side by side, each with its numbers below (kbps and frames per second; kbps, share of the
-  baseline, telemetry, track and patch rates, keyframe age). Bottom: the EW deck, received kbps
+  baseline, telemetry, track and patch rates, keyframe age, the filtered and ghost tracks, the
+  longest TSLF and the largest ghost ellipse in m^2). Bottom: the EW deck, received kbps
   (log scale) and messages per second over the last minute, and a status line.
 - `ReceiverThread` runs the station in its own thread: it waits for datagrams without the lock,
   then handles them and sends reports under it. The window reads the station only through
@@ -368,3 +440,26 @@ would scale by more than 4 (or less than 1/4) is not drawn.
 Starts `ew_chaos_proxy` with the three links, waits until it answers, then the ground station
 window and the UAV (`--send`, real time). When the window closes it stops the UAV and the proxy.
 The ports are the defaults (5600-5605, control 5700) or the same layout from `--base-port`.
+
+## Scenarios (`tools/run_scenario.py`, `tools/evaluate.py`, `scenarios/`)
+`python -m aegislink.tools.run_scenario SCENARIO.json [--seeds N ...] [--out DIR] [--base-port P]`
+
+- A scenario is a JSON file: `name`, `seconds` (how long the station measures), `warmup_s`
+  (default 5), `seed` (default 1), optional `motion_model`, and `events`, each
+  `{"at_s": T, "set": {...}}` with the proxy's control keys, applied at T seconds after the UAV
+  started to all three links (like the EW deck) or to the ones in `"links"`.
+- `run_scenario` starts the proxy, the ground station (headless, `--summary`, `--track-log`) and
+  the UAV (`--send`, with its ground-truth log), plays the events through the control port, and
+  waits for both nodes to end by themselves (the UAV flies 3 s longer than the station measures,
+  so both logs are complete). The logs and `result.json` (scenario, the station's summary, the
+  track score) go to `logs/scenarios/<name>_<date>_<time>/`. With `--seeds` it runs once per seed,
+  each in `seed_<n>/`, and pools the blackout samples of all runs.
+- `evaluate` matches each track to the true vehicle nearest (within 3 m) to its filtered
+  position at its last fix, moving the station's ground frame into the map frame by the two
+  origins, and checks every sample against that vehicle's true position at the same UAV time,
+  interpolated between frames. Samples taken while the foveated link was silent for 150 ms or
+  more and the track was a GHOST are the blackout samples; it reports their share inside the
+  95 % ellipse, overall and per whole second of TSLF, the length of each silence, and the share
+  for samples with the link up.
+- `scenarios/`: `clean`, `loss30` (30 % loss in bursts of 4), `kbps50` (50 kbps on all links)
+  and `blackout` (three 5 s blackouts, 15 s apart, in 60 s).

@@ -67,6 +67,16 @@ python -m aegislink.gcs.main --no-view --seconds 10 --warmup 5 --summary
 ```
 Without the proxy: `--direct` on both nodes.
 
+Scripted scenarios (`scenarios/*.json`): the proxy, a headless ground station and the UAV run
+the timeline, and the station's tracks are scored against the ground truth. The logs and
+`result.json` go to `logs/scenarios/`; `--seeds` runs it once per seed and pools the blackout
+samples. A 60 s scenario takes about 70 s.
+```
+python -m aegislink.tools.run_scenario scenarios/blackout.json
+python -m aegislink.tools.run_scenario scenarios/blackout.json --seeds 1 2 3
+python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jsonl --tracks logs/scenarios/<run>/tracks.jsonl
+```
+
 ## What the tests cover
 - `cpp/tests/test_crc32`: catalogued check values, chaining.
 - `cpp/tests/test_protocol`: byte layout, round trip, every rejection path, a flipped bit
@@ -84,7 +94,22 @@ Without the proxy: `--direct` on both nodes.
 - `cpp/tests/test_link`: delay and jitter bounds, loss counting, queueing and drop-tail, blackout
   timing and its precedence, rejected settings, a settings change keeps the rate backlog, seeds.
 - `cpp/tests/test_control`: replies, every key, errors leave the link unchanged, the stats text.
+- `cpp/tests/test_kalman`: predict and update of both models against hand-computed values (also
+  with correlated measurement noise), the acceleration moving into position, a constant velocity
+  learned, symmetric and positive covariance over 20,000 steps, bad input; and with a target
+  that really moves by the model, a mean innovation of 2 (1.9-2.1) and 94-96 % of positions
+  inside the 95 % ellipse over 40,000 steps.
 - `tests/test_bindings.py`: the module against a `struct` + `zlib` reference of the format.
+- `tests/test_kalman.py`: the bound filter against a NumPy reference of the same equations over
+  200 random steps (both models), `predicted` and `copy` leave it alone, `ValueError` on bad
+  arguments.
+- `tests/test_ghost_tracks.py`: a box centre lands on its ground point at four headings; the box
+  noise turned and scaled into metres; more variance for a box at (or within two sigmas of) the
+  image edge; LIVE, GHOST and LOST (by time, and by ellipse size for constant acceleration); old
+  measurements and coasting boxes ignored; the path runs ahead along the velocity; ellipse
+  points on the 95 % contour. Consistency: 90 s of a whole simulated map, every vehicle measured
+  except during 5 s blackouts every 10 s; the truth must lie inside the ellipse in 90-98 % of the
+  blackout frames for both models (it fails with a process noise of 0.5: 75 %).
 - `tests/test_loopback.py`: real UDP sockets on 127.0.0.1.
 - `tests/test_proxy.py`: starts the installed `ew_chaos_proxy` and measures it with `link_meter`:
   datagrams pass unchanged and in order; control replies, errors and stats (4 per second);
@@ -105,7 +130,7 @@ Without the proxy: `--direct` on both nodes.
   gap (the last fails without camera-motion compensation); one-frame false detections never
   become tracks; a track ends after 30 missed frames.
 - `tests/test_uav_run.py`: a 40 s run writes a log with the expected header and fields, whose
-  pose, positions and boxes agree within 1 px; tracks cover over 90 % of the vehicles in clear
+  pose, positions and boxes agree within 1 px, and whose `traffic` holds every vehicle; tracks cover over 90 % of the vehicles in clear
   view with at most 1 id switch and under 1 % false track frames; the score counts switches,
   reacquisitions and false tracks; a seed repeats a run exactly. About 10 s.
 - `tests/test_messages.py`: body sizes, round trips (centimetre latitude/longitude, wrapped ids,
@@ -140,7 +165,11 @@ Without the proxy: `--direct` on both nodes.
   messages not counted; patches only for listed tracks; the dashboard's numbers; the receiver
   thread receives, reports and stops; impossible altitudes (0, negative, NaN, infinite, 1e30)
   and headings (NaN, infinite) in telemetry, patches and keyframes dropped; a patch much larger
-  than its box dropped; `--snapshot` refused without the window.
+  than its box dropped; `--snapshot` refused without the window. Ghost tracks: matched boxes
+  become ground positions (coasting ones are not measured), a track list before its telemetry
+  is measured when the telemetry comes, the UAV clock runs on and tracks turn GHOST in a silence
+  (and are counted in the numbers), a restart clears them, the view holds them predicted to
+  now, the track log is written 30 times a second, the heading is interpolated the short way.
 - `tests/test_compositor.py`: positions relative to the first telemetry, interpolated, 10 s
   kept; a dot on the background lands where the camera model puts its ground point after a
   move, a turn and a climb (within 1 px), and is only scaled without poses; a patch lands on its
@@ -148,19 +177,23 @@ Without the proxy: `--direct` on both nodes.
   and a crop cut at the image edge keeps its uncut side on the box; boxes from an older frame move
   with the camera. These fail without the warp, the edge rule or the feathering. Telemetry
   repeating a frame keeps the history; extreme altitudes and position jumps neither raise nor
-  take over 10 ms.
+  take over 10 ms. A GHOST moves its patch to the predicted position (a LIVE one does not); the
+  ghost ellipse has the filter's size, its label sits above it and the path starts 4.5 m out;
+  no ghost is drawn without a view pose.
 - `tests/test_dashboard.py` (Qt offscreen; skipped where Qt cannot load): frame-time statistics;
   the window draws both views (patch, background and baseline pixels where expected) in under
-  16.7 ms at the 95th percentile; LINK LOST after a silence; the EW deck starts at the proxy's
+  16.7 ms at the 95th percentile; a ghost drawn and counted while the link is silent; LINK
+  LOST after a silence; the EW deck starts at the proxy's
   settings and sets loss, burst, rate, jitter, a blackout and Clear on all three links of the
   real proxy; without a proxy it says so; bad replies (NaN, infinite, huge, missing stats keys)
   and datagrams from another address change nothing; an exception while drawing is shown, not
   fatal; the kept frame times are bounded; Ctrl+C closes the window cleanly (a subprocess that
   raises SIGINT exits 0 and prints its frame times). A live run (UAV process, proxy, this window, about
   20 s): on a clean link both streams arrive, then the deck's rate slider at 50 kbps stops the
-  baseline while tracks keep arriving at over 28 per second, and the draw loop does not stall
-  (30 frames per second or more: with the UAV and the proxy on the same machine the rate depends
-  on the machine).
+  baseline while the tracks of at least 97 % of the UAV's frames keep arriving (counted by frame
+  number: under the load of the whole test run the UAV itself makes fewer than 30 frames a
+  second), and neither they nor the draw loop stall (20 track lists and 30 frames per second or
+  more: with the UAV and the proxy on the same machine the rates depend on the machine).
 - `tests/test_demo.py`: `run_demo` for 8 s (window offscreen) exits cleanly, draws over 300
   frames, receives tracks and baseline frames, and saves its snapshot. About 10 s.
 - `tests/test_stream.py`: the UAV, the proxy and the GCS as three processes, measured by the
@@ -168,6 +201,12 @@ Without the proxy: `--direct` on both nodes.
   baseline and 99 % of frames' telemetry and tracks arrive. Both links at 50 kbps: the foveated
   stream stays under the limit, 99 % of frames' tracks arrive (at least 29.5 per second), and no
   baseline frame gets through. About 30 s.
+- `tests/test_scenario.py`: the ground truth interpolated between frames and moved between
+  origins; blackout and link-up samples scored apart, by TSLF, with unmatched tracks counted;
+  scenario files checked and completed, the shipped ones load; pooled shares weighted by
+  samples. A short scenario end to end (UAV, proxy, headless station; a 3 s blackout): the
+  silence is found, the tracks are scored (loose bounds: one blackout with a few tracks), and
+  `result.json` is written. About 15 s.
 
 ## CI
 `.github/workflows/ci.yml` runs on every push: Windows (`msvc` preset) and Ubuntu (`gcc-asan`

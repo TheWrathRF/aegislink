@@ -38,6 +38,16 @@ Work in progress. So far it has:
   development PC it drew 62 frames per second with a frame time of 4.5 ms at the 95th
   percentile; after the links were limited to 50 kbps, the boxes kept arriving 30 times a
   second while the baseline froze.
+- **Ghost tracks**: the ground station follows every track with a Kalman filter (C++, constant
+  velocity or constant acceleration) in ground metres, so camera motion does not leak into the
+  vehicles' motion. When boxes stop arriving, in a blackout or under a tree, a track turns into a
+  ghost: its patch keeps moving along the prediction, drawn with its 95 % uncertainty ellipse,
+  its predicted path and the time since its last fix. The ellipse is only useful if it can be
+  trusted, so it is measured: in three 60 s runs (seeds 1-3) with three 5 s blackouts each, the
+  true vehicle position lay inside the drawn ellipse in 94.2 % of 6,153 blackout samples (90.9,
+  100 and 94.4 % per run; the misses are cars that braked to a stop during a blackout).
+- **Scripted scenarios**: JSON timelines of link settings (`scenarios/`) that run the proxy,
+  the ground station and the UAV together and score what arrived against the ground truth.
 
 ## Build and test
 
@@ -77,6 +87,13 @@ Or each in its own terminal:
 ew_chaos_proxy --link 5600:5601 --link 5602:5603 --link 5604:5605 --control 5700
 python -m aegislink.gcs.main
 python -m aegislink.uav.main --no-preview --send
+```
+
+To run a scenario (here three 5 s blackouts in 60 s) and score the tracks; the logs and a
+`result.json` go to `logs/scenarios/`:
+
+```
+python -m aegislink.tools.run_scenario scenarios/blackout.json
 ```
 
 C++ unit tests: `cmake --preset msvc` (Windows) or `cmake --preset gcc-asan` (Linux), then
