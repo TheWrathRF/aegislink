@@ -90,13 +90,15 @@ def box_measurement(camera, pose, box):
     x1, y1, x2, y2 = box
     w, h = x2 - x1, y2 - y1
     # The centre is the mean of two edges, each with its own noise and rounding.
-    var = np.array([(BOX_SIGMA_PX + BOX_SIGMA_FRAC * w) ** 2, (BOX_SIGMA_PX + BOX_SIGMA_FRAC * h) ** 2])
-    var = (var + ROUNDING_VAR_PX2) / 2
+    sigma = BOX_SIGMA_PX + BOX_SIGMA_FRAC * np.array([w, h])
+    var = (sigma ** 2 + ROUNDING_VAR_PX2) / 2
     # A box cut at the image edge has its centre moved inwards, by up to half the visible size
-    # (the detector needs half the vehicle in the image).
-    if x1 <= 0 or x2 >= camera.width - 1:
+    # (the detector needs half the vehicle in the image). The edge noise can leave a cut box a
+    # few pixels inside, so "at the edge" means within two sigmas of it.
+    mx, my = 2 * sigma
+    if x1 <= mx or x2 >= camera.width - 1 - mx:
         var[0] += (w / 2) ** 2
-    if y1 <= 0 or y2 >= camera.height - 1:
+    if y1 <= my or y2 >= camera.height - 1 - my:
         var[1] += (h / 2) ** 2
     m = camera.pixel_to_ground_matrix(pose)
     a = m[:, :2]

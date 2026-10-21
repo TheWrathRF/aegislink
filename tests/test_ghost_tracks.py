@@ -51,6 +51,12 @@ def test_a_box_cut_at_the_image_edge_is_less_certain_along_that_axis():
     mpp = CAMERA.metres_per_pixel(150.0)
     assert cut[0, 0] > inside[0, 0] + (20 / 2) ** 2 * mpp ** 2 * 0.99
     assert cut[1, 1] == pytest.approx(inside[1, 1])
+    # Edge noise (sigma 1 + 0.04 x 30 = 2.2 px) can leave a cut box a few pixels inside.
+    _, near_edge = gt.box_measurement(CAMERA, pose, (4, 100, 34, 116))
+    _, clear = gt.box_measurement(CAMERA, pose, (5, 100, 35, 116))
+    assert near_edge[0, 0] > 10 * clear[0, 0]
+    _, bottom = gt.box_measurement(CAMERA, pose, (100, 700, 130, 717))
+    assert bottom[1, 1] > 10 * inside[1, 1] and bottom[0, 0] == pytest.approx(inside[0, 0])
 
 
 def r_of(sigma):
