@@ -2,7 +2,6 @@
 
 import json
 import os
-import socket
 import subprocess
 import sys
 
@@ -11,28 +10,7 @@ import pytest
 # The demo opens the dashboard; Qt may not load on a bare Linux machine.
 pytest.importorskip("PyQt6.QtWidgets")
 
-from test_proxy import free_ports  # noqa: E402
-
-
-def free_port_block():
-    """A base port with the six link ports after it and base + 100 all free."""
-    for _ in range(20):
-        base = free_ports(1)[0]
-        if base > 65000:
-            continue
-        sockets = []
-        try:
-            for port in [base + i for i in range(6)] + [base + 100]:
-                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                sockets.append(s)
-                s.bind(("127.0.0.1", port))
-            return base
-        except OSError:
-            continue
-        finally:
-            for s in sockets:
-                s.close()
-    pytest.fail("no free block of ports")
+from test_proxy import free_port_block  # noqa: E402
 
 
 def test_run_demo_starts_everything_and_stops_with_the_window(tmp_path):

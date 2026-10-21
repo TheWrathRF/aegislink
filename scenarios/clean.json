@@ -1,0 +1,8 @@
+{
+  "name": "clean",
+  "description": "A clean link",
+  "seconds": 30,
+  "warmup_s": 5,
+  "seed": 1,
+  "events": []
+}

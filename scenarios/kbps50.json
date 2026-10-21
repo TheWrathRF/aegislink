@@ -1,0 +1,8 @@
+{
+  "name": "kbps50",
+  "description": "Both video links and the report link limited to 50 kbps, from the start",
+  "seconds": 30,
+  "warmup_s": 5,
+  "seed": 1,
+  "events": [{"at_s": 0, "set": {"kbps": 50}}]
+}

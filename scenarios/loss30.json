@@ -1,0 +1,8 @@
+{
+  "name": "loss30",
+  "description": "30 % packet loss in bursts of 4 packets on average, from the start",
+  "seconds": 30,
+  "warmup_s": 5,
+  "seed": 1,
+  "events": [{"at_s": 0, "set": {"loss_pct": 30, "burst": 4}}]
+}

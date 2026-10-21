@@ -1,0 +1,12 @@
+{
+  "name": "blackout",
+  "description": "Three total blackouts of 5 s on all links, 15 s apart",
+  "seconds": 60,
+  "warmup_s": 5,
+  "seed": 1,
+  "events": [
+    {"at_s": 17, "set": {"blackout_ms": 5000}},
+    {"at_s": 32, "set": {"blackout_ms": 5000}},
+    {"at_s": 47, "set": {"blackout_ms": 5000}}
+  ]
+}

@@ -1,5 +1,6 @@
 """ew_chaos_proxy as a real process, driven over real UDP sockets on 127.0.0.1."""
 
+import random
 import socket
 import subprocess
 import time
@@ -28,6 +29,29 @@ def free_ports(count):
     for s in sockets:
         s.close()
     return ports
+
+
+def free_port_block():
+    """A base port with the six link ports after it and base + 100 all free. It lies below the
+    ephemeral range (49152 and up on Windows, 32768 and up on Linux): the nodes' own sending and
+    control sockets get ephemeral ports, and one of them could take a port of the block before
+    the node meant for it binds it."""
+    rng = random.Random()
+    for _ in range(50):
+        base = rng.randrange(20000, 32000)
+        sockets = []
+        try:
+            for port in [base + i for i in range(6)] + [base + 100]:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                sockets.append(s)
+                s.bind(("127.0.0.1", port))
+            return base
+        except OSError:
+            continue
+        finally:
+            for s in sockets:
+                s.close()
+    pytest.fail("no free block of ports")
 
 
 @dataclass
