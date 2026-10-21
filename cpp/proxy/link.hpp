@@ -1,6 +1,7 @@
 #pragma once
 
 #include "gilbert_elliott.hpp"
+#include "spoofer.hpp"
 #include "token_bucket.hpp"
 
 #include <cstddef>
@@ -39,7 +40,8 @@ struct Verdict {
 
 // The impairments of one direction of the radio link, applied to each packet in this order:
 // blackout, burst loss, rate limit with a bounded queue (drop-tail), delay and jitter.
-// It only decides each packet's fate; the caller keeps the packets and sends them on time.
+// It only decides each packet's fate; the caller keeps the packets and sends them on time, and
+// passes the forwarded ones through the link's spoofer.
 class Link {
 public:
     explicit Link(std::uint64_t seed);
@@ -56,8 +58,12 @@ public:
     void count_sent(std::size_t bytes, bool ok);
     const LinkStats& stats() const { return stats_; }
 
+    Spoofer& spoofer() { return spoofer_; }
+    const Spoofer& spoofer() const { return spoofer_; }
+
 private:
     LinkConfig config_;
+    Spoofer spoofer_;
     GilbertElliott loss_;
     std::optional<TokenBucket> bucket_;  // empty when the rate is unlimited
     std::int64_t blackout_until_us_ = 0;

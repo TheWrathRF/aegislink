@@ -2,6 +2,7 @@ add_library(aegis_proxy STATIC
   control.cpp
   gilbert_elliott.cpp
   link.cpp
+  spoofer.cpp
   token_bucket.cpp
   udp_socket.cpp
 )

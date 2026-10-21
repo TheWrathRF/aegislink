@@ -28,11 +28,14 @@ double parse_number(std::string_view key, std::string_view text) {
 
 std::string describe(std::size_t index, const Link& link, std::int64_t now_us) {
     const LinkConfig& c = link.config();
+    const SpoofConfig s = link.spoofer().config(now_us);
     return "link=" + std::to_string(index + 1) + " loss_pct=" + number(c.loss * 100.0) +
            " burst=" + number(c.mean_burst) + " kbps=" + number(c.kbps) +
            " queue_ms=" + number(c.queue_ms) + " delay_ms=" + number(c.delay_ms) +
            " jitter_ms=" + number(c.jitter_ms) +
-           " blackout_ms=" + number(link.blackout_remaining_ms(now_us));
+           " blackout_ms=" + number(link.blackout_remaining_ms(now_us)) +
+           " spoof_drift_mps=" + number(s.drift_mps) + " spoof_bearing_deg=" + number(s.bearing_deg) +
+           " spoof_offset_m=" + number(s.offset_m);
 }
 
 double kbps(std::uint64_t bytes_now, std::uint64_t bytes_before, double interval_s) {
@@ -73,7 +76,8 @@ std::string apply_command(std::string_view command, std::vector<Link>& links, st
             } else if (key == "blackout_ms") {
                 blackout_ms = value;
             } else if (key == "loss_pct" || key == "burst" || key == "kbps" || key == "queue_ms" ||
-                       key == "delay_ms" || key == "jitter_ms") {
+                       key == "delay_ms" || key == "jitter_ms" || key == "spoof_drift_mps" ||
+                       key == "spoof_bearing_deg" || key == "spoof_offset_m") {
                 settings.emplace_back(key, value);
             } else {
                 throw std::invalid_argument("unknown key '" + std::string(key) + "'");
@@ -84,6 +88,8 @@ std::string apply_command(std::string_view command, std::vector<Link>& links, st
         // Changes go to a copy first, so a command that fails halfway changes nothing.
         Link updated = links[*index];
         LinkConfig config = updated.config();
+        SpoofConfig spoof = updated.spoofer().config(now_us);
+        bool spoof_changed = false;
         for (const auto& [key, value] : settings) {
             if (key == "loss_pct") config.loss = value / 100.0;
             if (key == "burst") config.mean_burst = value;
@@ -91,8 +97,13 @@ std::string apply_command(std::string_view command, std::vector<Link>& links, st
             if (key == "queue_ms") config.queue_ms = value;
             if (key == "delay_ms") config.delay_ms = value;
             if (key == "jitter_ms") config.jitter_ms = value;
+            if (key.starts_with("spoof_")) spoof_changed = true;
+            if (key == "spoof_drift_mps") spoof.drift_mps = value;
+            if (key == "spoof_bearing_deg") spoof.bearing_deg = value;
+            if (key == "spoof_offset_m") spoof.offset_m = value;
         }
         updated.configure(config, now_us);
+        if (spoof_changed) updated.spoofer().configure(spoof, now_us);
         if (blackout_ms) updated.blackout(now_us, *blackout_ms);
         links[*index] = updated;
         return "ok " + describe(*index, links[*index], now_us);
@@ -115,7 +126,9 @@ std::string format_stats(const std::vector<Link>& links, const std::vector<LinkS
                 " send_errors=" + std::to_string(s.send_errors) +
                 " in_kbps=" + number(kbps(s.in_bytes, p.in_bytes, interval_s)) +
                 " out_kbps=" + number(kbps(s.out_bytes, p.out_bytes, interval_s)) +
-                " blackout_ms=" + number(links[i].blackout_remaining_ms(now_us)) + "\n";
+                " blackout_ms=" + number(links[i].blackout_remaining_ms(now_us)) +
+                " spoofed=" + std::to_string(links[i].spoofer().spoofed()) +
+                " spoof_offset_m=" + number(links[i].spoofer().offset_m(now_us)) + "\n";
     }
     return text;
 }

@@ -8,10 +8,14 @@ from dataclasses import dataclass
 
 import pytest
 
+from aegislink._core import MsgType, Packetizer, ParseError, parse_packet
+from aegislink.common import geo, messages
+from aegislink.common.messages import TelemetryMsg
 from aegislink.common.proxy_control import ProxyControl, ProxyError
 from aegislink.tools import link_meter, run_demo
 
-CLEAN = dict(loss_pct=0, burst=1, kbps=0, queue_ms=250, delay_ms=0, jitter_ms=0, blackout_ms=0)
+CLEAN = dict(loss_pct=0, burst=1, kbps=0, queue_ms=250, delay_ms=0, jitter_ms=0, blackout_ms=0,
+             spoof_drift_mps=0, spoof_bearing_deg=0, spoof_offset_m=0)
 
 
 def find_proxy():
@@ -108,7 +112,8 @@ def test_forwards_datagrams_unchanged_and_in_order(clean_proxy):
 def test_control_reply_lists_the_settings(clean_proxy):
     settings = clean_proxy.control.configure(1, loss_pct=10, burst=2, delay_ms=5)
     assert settings == dict(link=1, loss_pct=10, burst=2, kbps=0, queue_ms=250, delay_ms=5,
-                            jitter_ms=0, blackout_ms=0)
+                            jitter_ms=0, blackout_ms=0, spoof_drift_mps=0, spoof_bearing_deg=0,
+                            spoof_offset_m=0)
 
 
 def test_bad_commands_are_refused(clean_proxy):
@@ -166,6 +171,43 @@ def test_delay_and_jitter(clean_proxy):
     assert abs(m.mean_delay_ms - 40) <= 5
     # Windows may wake the proxy a few ms late.
     assert m.max_delay_ms <= 50 + 15
+
+
+def _telemetry_datagrams(frames):
+    packetizer = Packetizer()
+    for frame in frames:
+        body = messages.encode_telemetry(TelemetryMsg(frame, 39.9, 32.8, 150.0, 10.0, 45.0, 1.0, 2.0))
+        yield from packetizer.packetize(MsgType.TELEMETRY, frame * 33_333, body)
+
+
+def test_spoofing_moves_the_telemetry_position_and_the_packet_still_checks_out(clean_proxy):
+    clean_proxy.control.configure(1, spoof_offset_m=50, spoof_bearing_deg=90)
+    other = Packetizer(first_seq=7).packetize(MsgType.TRACKS, 0, b"\x01" * 16)[0]
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as tx:
+        for datagram in [*_telemetry_datagrams(range(3)), other]:
+            tx.sendto(datagram, ("127.0.0.1", clean_proxy.listen_port))
+    received = [clean_proxy.receiver.recv(65535) for _ in range(4)]
+    for frame, datagram in enumerate(received[:3]):
+        packet = parse_packet(datagram)
+        assert packet.error == ParseError.OK       # the CRC was recomputed
+        t = messages.decode_telemetry(packet.payload)
+        east, north = geo.latlon_to_enu(t.lat, t.lon, (39.9, 32.8))
+        assert t.frame == frame and abs(east - 50) < 0.02 and abs(north) < 0.02
+        assert (t.alt_m, t.speed_mps, t.heading_deg) == (150.0, 10.0, 45.0)
+    assert received[3] == other
+    assert clean_proxy.control.read_stats()["links"][1]["spoofed"] == 3
+
+
+def test_a_drift_grows_and_clearing_it_ends_the_spoofing(clean_proxy):
+    clean_proxy.control.configure(1, spoof_drift_mps=10, spoof_bearing_deg=0)
+    time.sleep(0.5)
+    offset = clean_proxy.control.configure(1)["spoof_offset_m"]
+    assert 4.5 <= offset <= 6.5
+    clean_proxy.control.configure(1, spoof_drift_mps=0, spoof_offset_m=0)
+    sent = list(_telemetry_datagrams([5]))
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as tx:
+        tx.sendto(sent[0], ("127.0.0.1", clean_proxy.listen_port))
+    assert clean_proxy.receiver.recv(65535) == sent[0]
 
 
 def test_blackout_drops_everything_until_it_ends(clean_proxy):

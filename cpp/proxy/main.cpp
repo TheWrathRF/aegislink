@@ -164,10 +164,13 @@ int run(const Options& options) {
                 } else {
                     const auto got = sockets[index].receive(buffer);
                     if (!got) break;
-                    const Verdict verdict = links[index].admit(now_us(), got->size);
+                    const std::int64_t arrived_us = now_us();
+                    const Verdict verdict = links[index].admit(arrived_us, got->size);
                     if (verdict.fate == Fate::Forward) {
-                        queue.push({verdict.release_us, order++, index,
-                                    {buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(got->size)}});
+                        std::vector<std::uint8_t> data(
+                            buffer.begin(), buffer.begin() + static_cast<std::ptrdiff_t>(got->size));
+                        links[index].spoofer().apply(data, arrived_us);
+                        queue.push({verdict.release_us, order++, index, std::move(data)});
                     }
                 }
             }
