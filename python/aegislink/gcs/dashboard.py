@@ -141,7 +141,16 @@ def fovea_text(s):
                    f"{s['max_ellipse_m2']:,.0f} m2")
     return (f"{s['fovea_kbps']:,.1f} kbps ({share})\n"
             f"telemetry {s['telemetry_hz']:.1f} Hz   tracks {s['tracks_hz']:.1f} Hz   "
-            f"patches {s['patches_per_s']:.1f}/s   keyframe {age}\n{ghosts}")
+            f"patches {s['patches_per_s']:.1f}/s   keyframe {age}\n{ghosts}\n{nav_text(s)}")
+
+
+def nav_text(s):
+    """The GPS check: the alarm, both speeds over the last keyframe pair and its d2."""
+    state = "GPS SPOOFED: navigating by optical flow" if s["gps_alarm"] else "GPS checked"
+    if s["flow_speed"] is None or s["gps_speed"] is None:
+        return f"{state}   (no keyframe pair yet)"
+    return (f"{state}   GPS {s['gps_speed']:.1f} m/s   flow {s['flow_speed']:.1f} m/s   "
+            f"d2 {s['spoof_d2']:,.1f}   alarms {s['gps_alarms']}")
 
 
 class Dashboard(QMainWindow):
@@ -259,8 +268,12 @@ class Dashboard(QMainWindow):
         self.baseline_view.set_frame(
             self._baseline_image(full_frame, self.baseline_view.render_size()))
         silent = stats["fovea_silent_s"]
-        self.fovea_view.banner = ("" if silent is None or silent < LINK_LOST_S
-                                  else f"LINK LOST  {silent:.1f} s")
+        banners = []
+        if silent is not None and silent >= LINK_LOST_S:
+            banners.append(f"LINK LOST  {silent:.1f} s")
+        if stats["gps_alarm"]:
+            banners.append("GPS SPOOFED  optical-flow navigation")
+        self.fovea_view.banner = "\n".join(banners)
         # repaint() draws now, so the frame time includes the drawing.
         self.fovea_view.repaint()
         self.baseline_view.repaint()

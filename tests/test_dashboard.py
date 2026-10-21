@@ -191,6 +191,46 @@ def test_deck_sets_all_three_links(app, proxy):
     deck.proxy.close()
 
 
+def test_deck_spoofs_the_gps_on_all_three_links_and_clear_ends_it(app, proxy):
+    ports, control = proxy
+    deck = EwDeck(ProxyLink(ports[6]))
+    assert wait_for(lambda: deck.synced, deck, app)
+    deck.sliders["spoof_bearing_deg"].setValue(90)
+    deck.sliders["spoof_drift_mps"].setValue(3)
+    deck.jump_m.setValue(40)
+    deck.jump_button.click()
+    assert wait_for(lambda: deck.proxy.settings.get(3, {}).get("spoof_offset_m", 0) >= 40, deck, app)
+    for link in (1, 2, 3):
+        s = control.configure(link)
+        assert (s["spoof_drift_mps"], s["spoof_bearing_deg"]) == (3, 90)
+        assert 40 <= s["spoof_offset_m"] <= 45
+    assert wait_for(lambda: "SPOOFING" in deck.status.text(), deck, app)
+    deck.clear()
+    time.sleep(0.1)
+    for link in (1, 2, 3):
+        s = control.configure(link)
+        assert (s["spoof_drift_mps"], s["spoof_offset_m"]) == (0, 0)
+    assert deck.setting("spoof_drift_mps") == 0
+    deck.proxy.close()
+
+
+def test_a_gps_alarm_is_shown(app, station):
+    fill(station)
+    window = Dashboard(ReceiverThread(station))
+    window.draw_frame()
+    window.update_status()
+    assert window.fovea_view.banner == "" and "GPS SPOOFED" not in window.fovea_hud.text()
+    station.spoof.alarm, station.spoof.d2 = True, 412.0
+    station.spoof.velocity, station.spoof.gps_velocity = (6.0, 8.0), (9.0, 12.0)
+    window.draw_frame()
+    assert "GPS SPOOFED" in window.fovea_view.banner
+    window.update_status()      # the plots and status line, then the numbers
+    window.update_status()
+    text = window.fovea_hud.text()
+    assert "GPS SPOOFED" in text and "GPS 15.0 m/s" in text and "flow 10.0 m/s" in text
+    window.close()
+
+
 def test_deck_without_a_proxy_says_so(app):
     port = free_ports(1)[0]
     deck = EwDeck(ProxyLink(port))

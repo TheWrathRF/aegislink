@@ -101,7 +101,8 @@ class ProxyLink:
 
 
 class EwDeck(QGroupBox):
-    """Loss, burst length, rate limit, delay, jitter and a timed blackout, for all links."""
+    """Loss, burst length, rate limit, delay, jitter, a timed blackout and GPS spoofing (a drift
+    or a jump of the telemetry position, along a bearing), for all links."""
 
     def __init__(self, proxy):
         super().__init__("EW deck")
@@ -114,7 +115,9 @@ class EwDeck(QGroupBox):
                 ("burst", "Mean burst", 1, 20, "{} packets"),
                 ("kbps", "Rate limit", 0, len(RATE_STEPS_KBPS) - 1, None),
                 ("delay_ms", "Delay", 0, 300, "{} ms"),
-                ("jitter_ms", "Jitter", 0, 200, "{} ms")]
+                ("jitter_ms", "Jitter", 0, 200, "{} ms"),
+                ("spoof_drift_mps", "GPS drift", 0, 10, "{} m/s"),
+                ("spoof_bearing_deg", "Spoof bearing", 0, 359, "{} deg")]
         for row, (key, label, lo, hi, fmt) in enumerate(rows):
             slider = QSlider(Qt.Orientation.Horizontal)
             slider.setRange(lo, hi)
@@ -142,9 +145,17 @@ class EwDeck(QGroupBox):
         clear = QPushButton("Clear")
         clear.clicked.connect(self.clear)
         grid.addWidget(clear, row, 2)
+        self.jump_m = QDoubleSpinBox()
+        self.jump_m.setRange(5.0, 500.0)
+        self.jump_m.setValue(50.0)
+        self.jump_m.setSuffix(" m")
+        self.jump_button = QPushButton("GPS jump")
+        self.jump_button.clicked.connect(self.jump)
+        grid.addWidget(self.jump_button, row + 1, 0)
+        grid.addWidget(self.jump_m, row + 1, 1)
         self.status = QLabel()
         self.status.setWordWrap(True)
-        grid.addWidget(self.status, row + 1, 0, 1, 3)
+        grid.addWidget(self.status, row + 2, 0, 1, 3)
 
     def setting(self, key):
         """The slider's value in the proxy's units."""
@@ -166,13 +177,18 @@ class EwDeck(QGroupBox):
     def blackout(self):
         self.proxy.send(blackout_ms=round(self.blackout_s.value() * 1000))
 
+    def jump(self):
+        """Moves the spoofed position this far along the bearing at once (from no offset)."""
+        self.proxy.send(spoof_offset_m=self.jump_m.value())
+
     def clear(self):
         for key, slider in self.sliders.items():
             slider.blockSignals(True)
             slider.setValue(1 if key == "burst" else 0)
             slider.blockSignals(False)
             self._show(key)
-        self.proxy.send(loss_pct=0, burst=1, kbps=0, delay_ms=0, jitter_ms=0, blackout_ms=0)
+        self.proxy.send(loss_pct=0, burst=1, kbps=0, delay_ms=0, jitter_ms=0, blackout_ms=0,
+                        spoof_drift_mps=0, spoof_bearing_deg=0, spoof_offset_m=0)
 
     def _sync(self, settings):
         """Moves the sliders to the proxy's settings, without sending them back."""
@@ -205,9 +221,12 @@ class EwDeck(QGroupBox):
             if s is None:
                 continue
             blackout = f"  BLACKOUT {s['blackout_ms'] / 1000:.1f} s" if s["blackout_ms"] else ""
+            # Only the foveated link carries telemetry, so only its offset matters.
+            offset = s.get("spoof_offset_m", 0) if link == config.FOVEA_LINK else 0
+            spoofing = f"  SPOOFING GPS {offset:.0f} m" if offset else ""
             lines.append(f"{link} {name}: {s['out_kbps']:.1f} kbps out, dropped "
                          f"{s['drop_loss']:.0f} loss / {s['drop_queue']:.0f} queue / "
-                         f"{s['drop_blackout']:.0f} blackout{blackout}")
+                         f"{s['drop_blackout']:.0f} blackout{blackout}{spoofing}")
         if self.proxy.error:
             lines.append(f"proxy: {self.proxy.error}")
         self.status.setText("\n".join(lines) or "Proxy connected")

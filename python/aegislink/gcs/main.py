@@ -99,6 +99,8 @@ def main():
         result["bad_packets"] = fovea.bad + station.links["baseline"].bad
         result["bad_messages"] = station.bad_messages
         result["expired"] = fovea.reassembler.stats.expired
+        result["gps_alarms"] = station.spoof.alarms
+        result["undecided_keyframe_pairs"] = station.spoof.undecided
         print(json.dumps(result))
 
 
