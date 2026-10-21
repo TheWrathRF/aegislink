@@ -238,7 +238,9 @@ class GroundStation:
                 return BAD
         if msg_type == MsgType.TELEMETRY:
             held = self.telemetry.frame if self.telemetry else None
-            if not _newer(body.frame, held):
+            # The UAV sends one telemetry per frame, so the held frame again is a copy (a replay
+            # would turn the UAV clock back to when the original arrived).
+            if not _newer(body.frame, held) or body.frame == held:
                 return OLD
             if _restarted(body.frame, held):
                 self._forget()

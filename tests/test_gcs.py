@@ -332,6 +332,14 @@ def test_track_log_writes_the_predictions_30_times_a_second(tmp_path):
     assert track["fix"] == pytest.approx([1.0, 0.0, 0.0], abs=0.1) and len(track["cov"]) == 3
 
 
+def test_replayed_telemetry_does_not_turn_the_uav_clock_back(station):
+    deliver(station, MsgType.TELEMETRY, telemetry_at(30), now_s=1.0)
+    # The same frame again, later and somewhere else: a copy put on the link, not news.
+    deliver(station, MsgType.TELEMETRY, telemetry_at(30, lat=46.001), now_s=3.0)
+    assert station.uav_time(4.0) == pytest.approx(1.0 + 3.0)
+    assert station.poses.position(30) == pytest.approx((0.0, 0.0))
+
+
 def test_telemetry_pose_interpolates_the_heading_the_short_way(station):
     deliver(station, MsgType.TELEMETRY, telemetry_at(10, alt=100.0, heading=350.0))
     deliver(station, MsgType.TELEMETRY, telemetry_at(12, alt=120.0, heading=10.0))
