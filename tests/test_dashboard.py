@@ -226,7 +226,13 @@ def test_rate_slider_starves_the_baseline_while_tracks_keep_coming(app, proxy, t
         clean = run_for(8)
         assert clean["baseline_fps"] > 25 and clean["tracks_hz"] > 25
         window.deck.sliders["kbps"].setValue(RATE_STEPS_KBPS.index(50))
-        limited = run_for(8)
+        run_for(4)          # the budget settles on the new rate
+        with receiver.lock:
+            station.measurement.start_s = time.monotonic()
+        limited = run_for(4)
+        with receiver.lock:
+            station.measurement.stop_s = time.monotonic()
+        delivered = station.measurement.summary()
     finally:
         window.close()
         receiver.stop()
@@ -237,7 +243,11 @@ def test_rate_slider_starves_the_baseline_while_tracks_keep_coming(app, proxy, t
     assert control.configure(2)["kbps"] == 50
     assert limited["baseline_fps"] < 1
     # Over one second the proxy lets through at most its rate plus one 1230-byte datagram.
-    assert limited["tracks_hz"] >= 28 and limited["fovea_kbps"] <= 50 + 1230 * 8 / 1000
+    assert limited["fovea_kbps"] <= 50 + 1230 * 8 / 1000
+    # The tracks of (almost) every frame the UAV made arrive. The UAV's own frame rate drops below
+    # 30 under the load of the whole test run, so this counts frames, not tracks per second; the
+    # rate bound only catches a stall.
+    assert delivered["tracks_delivered"] >= 0.97 and limited["tracks_hz"] >= 20
     # The UAV, the proxy and the window share the machine here, so the frame rate depends on the
     # machine (52 fps on 4-core CI runners); this only catches a stalled draw loop. The frame time
     # is checked without that load in test_window_draws_both_views_within_a_frame_time.
