@@ -57,6 +57,9 @@ def test_log_entries_of_a_frame_agree_with_each_other(result):
                 u, w = camera.ground_to_pixel(pose, [v["east"], v["north"]])
                 assert abs(u - (x1 + x2) / 2) < 1.0 and abs(w - (y1 + y2) / 2) < 1.0
                 checked += 1
+            # Every vehicle's position is logged too, by id, also far from the camera.
+            assert f["traffic"][v["id"]] == pytest.approx([v["east"], v["north"]], abs=0.01)
+        assert len(f["traffic"]) == 64
     assert checked > 100
 
 

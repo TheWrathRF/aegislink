@@ -4,9 +4,10 @@
     python -m aegislink.uav.main --no-preview --seconds 60
     python -m aegislink.uav.main --send          # also stream to the GCS through the proxy
 
-Every run writes the ground truth (UAV pose and the vehicles near the camera, one JSON object per
-frame) to logs/, and prints how well the tracks matched the true vehicles. With --send it runs in
-real time and streams the foveated and the baseline video (see aegislink.common.config).
+Every run writes the ground truth (UAV pose, the vehicles near the camera and where every vehicle
+is, one JSON object per frame) to logs/, and prints how well the tracks matched the true
+vehicles. With --send it runs in real time and streams the foveated and the baseline video (see
+aegislink.common.config).
 """
 
 import argparse
@@ -39,6 +40,7 @@ class FrameResult:
     vehicles: dict       # id -> (east, north, heading, speed) of the vehicles in `truths`
     detections: list
     tracks: list         # confirmed tracks, coasting ones included
+    traffic: list        # (east, north) of every vehicle, by vehicle id
 
 
 class UavSim:
@@ -66,8 +68,9 @@ class UavSim:
         for truth in truths:
             v = self.world.vehicles[truth.id]
             vehicles[v.id] = (*self.world.vehicle_pose(v), v.speed)
+        traffic = [self.world.vehicle_pose(v)[:2] for v in self.world.vehicles]
         result = FrameResult(self.index, t, frame, pose, self.flight.telemetry(t), truths,
-                             vehicles, detections, tracks)
+                             vehicles, detections, tracks, traffic)
         self.world.step(1 / FPS)
         self.flight.step(1 / FPS)
         self.last_pose = pose
@@ -169,7 +172,8 @@ class GroundTruthLog:
                     "pitch": round(tel.pitch_deg, 3), "roll": round(tel.roll_deg, 3),
                     "speed": round(tel.speed_mps, 3), "lat": round(tel.lat, 8),
                     "lon": round(tel.lon, 8)},
-            "vehicles": vehicles})
+            "vehicles": vehicles,
+            "traffic": [[round(east, 2), round(north, 2)] for east, north in r.traffic]})
 
     def close(self):
         self.file.close()

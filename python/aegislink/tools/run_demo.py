@@ -18,7 +18,7 @@ from pathlib import Path
 from aegislink.common import config
 from aegislink.common.proxy_control import ProxyControl
 
-# Without --seconds the UAV flies this long; its ground-truth log grows by about 1.3 MB a minute.
+# Without --seconds the UAV flies this long; its ground-truth log grows by about 3.9 MB a minute.
 UAV_SECONDS = 3600
 
 
