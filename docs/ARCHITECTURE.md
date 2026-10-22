@@ -16,7 +16,8 @@ ground station follows its tracks with.
   `common/proxy_control.py` talks to the proxy's control port; `common/geo.py` converts local
   metres to latitude/longitude; `tools/loopback_check.py` sends messages over loopback UDP and
   checks that they arrive intact; `tools/link_meter.py` measures a proxy link; `uav/` is the UAV
-  side (synthetic world, camera, flight, detector, tracker, encoder, scheduler, streamer);
+  side (synthetic world, camera, flight, simulated and YOLO detectors, real video clips, tracker,
+  encoder, scheduler, streamer);
   `gcs/` the ground station (receiver, poses, ghost tracks, GPS spoofing check, compositor,
   dashboard, EW deck);
   `tools/run_demo.py` starts the proxy, the ground station and the UAV together;
@@ -209,8 +210,44 @@ Everything uses a local frame in metres: x = east, y = north, origin at the map 
   4. an unmatched detection starts a track, which gets an id after 3 hits in a row (one miss
      before that deletes it); a confirmed track is deleted after 30 missed frames (1 s).
 
+## Real video and YOLO (`uav/video.py`, `uav/yolo_detector.py`)
+`python -m aegislink.uav.main --video CLIP [--alt0 55] [--model models/yolo26n-obb.onnx]`
+
+- `VideoClip` reads a clip filmed straight down, resizes it to 1280 x 720 and keeps the frames as
+  JPEG in memory (about 0.27 MB each). A clip has no flight log, so the camera path is measured
+  from the images: each frame is registered to the one before on a half-size gray copy (Shi-Tomasi
+  corners, pyramidal Lucas-Kanade flow, `estimateAffinePartial2D` with RANSAC, so moving vehicles
+  are outliers), and the chained similarity transforms give position, heading and altitude
+  relative to the first frame, which is put at the origin, heading north, at `--alt0` metres (a
+  guess from the size of a car). A frame that cannot be registered (fewer than 20 agreeing
+  points) is assumed to move like the one before. Telemetry comes from that path: ground speed
+  from the frames on both sides, pitch and roll 0 (the gimbal hides the airframe's tilt). Past
+  its end the clip plays backwards and then forwards again, so images and telemetry never jump.
+  On the simulated flight (4 s with a turn and a climb, rendered and registered) the path stays
+  within 0.5 m, 0.5 m of altitude and 0.5 degrees of the truth. The 26 s clip the demo uses (a
+  roundabout in Tuzla, from Pexels) loads in about 7 s; its camera climbs from 55 to 140 m and
+  turns 6 degrees.
+- `YoloDetector` runs Ultralytics YOLO26n-obb, exported to ONNX for a 384 x 640 input, with
+  onnxruntime's CUDA provider (`pip install -e ".[gpu]"` installs onnxruntime-gpu with the CUDA
+  and cuDNN libraries as pip packages; `preload_dlls()` loads them). The model is trained on
+  DOTA, aerial images taken from above: on the first frame of the clip it finds 19 of about 25
+  cars, and 32 per frame on average over the clip as the camera climbs and sees more of the town.
+  YOLO26 n and s trained on COCO photos, at the same input size, found 7 and 14 on the first
+  frame and 0-2 once the camera was high. The export has the box selection built in (class-agnostic, so
+  a car is not boxed both as a small and a large vehicle), and its 300 output rows are centre,
+  size, score, class and angle in input pixels. The frame is letterboxed (scaled to fit, grey 114
+  around it); rows of the two vehicle classes with a score of at least 0.25 become the upright
+  box around the rotated one, mapped back to frame pixels. On the RTX 4080 a frame takes 7.6 ms
+  (median; 10.2 ms at the 95th percentile), preparation included.
+- `VideoUav` is `UavSim` for a clip: frame and pose from the clip, YOLO, the same tracker. There
+  is no ground truth, so nothing is logged or scored; the run prints YOLO's time per frame.
+- Getting the model (once; Ultralytics is needed only for the export, so it can live in a
+  throwaway environment): `YOLO("yolo26n-obb.pt").export(format="onnx", imgsz=(384, 640),
+  nms=True, agnostic_nms=True)`, then move the `.onnx` file to `models/`.
+
 ## UAV loop and ground-truth log (`uav/main.py`)
-`python -m aegislink.uav.main [--seconds 60] [--seed 1] [--no-preview] [--log PATH] [--send]`
+`python -m aegislink.uav.main [--seconds 60] [--seed 1] [--no-preview] [--log PATH] [--send]
+[--video CLIP]`
 
 - `UavSim.step()` renders the current state, detects, tracks (with the camera motion since the
   last frame), then advances the world and the flight by 1/30 s. A seed fixes the whole run.
@@ -319,7 +356,7 @@ reads receiver reports from its own socket. Sending and receiving use separate s
 on Windows a send to a closed port makes the next receive on the same socket fail.
 
 ## Ground station (`gcs/`)
-`python -m aegislink.gcs.main [--no-view] [--seconds S] [--warmup S] [--summary] [--snapshot PNG] [--direct] [--proxy-control PORT] [--motion-model cv|ca] [--track-log PATH]`
+`python -m aegislink.gcs.main [--no-view] [--seconds S] [--warmup S] [--summary] [--snapshot PNG] [--record DIR] [--direct] [--proxy-control PORT] [--motion-model cv|ca] [--track-log PATH]`
 
 - `GroundStation` (`gcs/receiver.py`) reads both links with `select()` and one `LinkReceiver`
   each. The foveated link's reassembler waits 4 s (a paced keyframe takes about 3 s at 50
@@ -388,8 +425,13 @@ with the camera's, ground metres do not.
   speed standard deviation of 10 m/s (and 3 m/s^2 for the acceleration).
 - **States**: LIVE while fixes arrive; GHOST when the last fix is more than 150 ms old (the
   filter only predicts and its ellipse grows); LOST, and forgotten, when the last fix is 10 s old
-  or the 95 % ellipse's longer semi-axis exceeds 100 m. A track the UAV stopped listing stays
-  until then. At most 64 tracks are kept: when full, a new id replaces the track with the oldest
+  or the 95 % ellipse's longer semi-axis exceeds 100 m. A track that a newly received track list
+  no longer holds ends at once: the UAV dropped it itself (the vehicle left the view or was not
+  detected for 1 s), so it is not waiting for the link. In a blackout no list arrives, so every
+  track carries on as a ghost; a track the UAV still lists while it coasts turns GHOST after
+  150 ms like any other. (On the real clip, where cars leave the view all the time, keeping
+  dropped tracks for 10 s left 17-24 ghosts with ellipses up to 100 m across the view.) At most
+  64 tracks are kept: when full, a new id replaces the track with the oldest
   fix, or is refused if every track was fixed at that same moment (a forged track list of 255
   new ids cannot fill the station with filters that every drawn frame works through).
 - **Estimates** for a moment `t`: state, time since the last fix (TSLF), mean, 2 x 2 position
@@ -459,7 +501,9 @@ would scale by more than 4 (or less than 1/4) is not drawn.
   taken and placed so that its track's box lands on the newest box: the target moves at the track
   rate (30 Hz) even when its patch is older. A crop cut at the image edge is placed by its uncut
   side, which lies 8 px (the pad) from the box. The patch's border fades into the background over
-  6 px, inside the pad, so the vehicle stays opaque.
+  6 px, inside the pad, so the vehicle stays opaque. Patches of the same frame share one camera
+  motion, and the fade masks are made once per patch size: with about 40 tracks on the real clip
+  that took the frame time from 17.7 to 14.4 ms at the 95th percentile.
 - Boxes are drawn green when matched in their frame, amber while coasting, with their ids.
 - **Ghost tracks** are drawn into the view through the view's camera pose (not drawn without
   one). A GHOST track's box and patch move, at their size, to where its filter predicts the
@@ -488,6 +532,9 @@ would scale by more than 4 (or less than 1/4) is not drawn.
 - No foveated datagram for 0.5 s: the view shows LINK LOST and how long. While the GPS spoofing
   alarm is on it shows GPS SPOOFED, and the numbers below it the GPS and flow speeds over the
   last keyframe pair, its `d2` and how many alarms there were.
+- `--record DIR` saves a picture of the whole window every 100 ms as `DIR/00000.jpg`,
+  `00001.jpg`, ... (JPEG: a PNG of the window takes a few frames' time). Each picture is a grab
+  of the whole window on the drawing thread, so recording costs draw time.
 - In PyQt6 an exception that leaves a Qt slot ends the process, so the two timer slots catch
   everything and show it in the status line. Ctrl+C quits the event loop (a SIGINT handler), so
   the receiver stops and the frame times are still printed. The frame times of the last 10
@@ -507,10 +554,13 @@ would scale by more than 4 (or less than 1/4) is not drawn.
   cause from the proxy's stats.
 
 ## Demo (`tools/run_demo.py`)
-`python -m aegislink.tools.run_demo [--seed N] [--seconds S] [--snapshot PNG] [--log PATH] [--base-port P]`
+`python -m aegislink.tools.run_demo [--seed N] [--seconds S] [--snapshot PNG] [--record DIR]
+[--log PATH] [--video CLIP] [--alt0 M] [--base-port P]`
 
 Starts `ew_chaos_proxy` with the three links, waits until it answers, then the ground station
-window and the UAV (`--send`, real time). When the window closes it stops the UAV and the proxy.
+window and the UAV (`--send`, real time; with `--video` over the clip with YOLO, which first takes
+about 7 s to measure the clip's camera path). When the window closes it stops the UAV and the
+proxy.
 The ports are the defaults (5600-5605, control 5700) or the same layout from `--base-port`.
 
 ## Scenarios (`tools/run_scenario.py`, `tools/evaluate.py`, `scenarios/`)

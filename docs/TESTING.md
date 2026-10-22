@@ -5,6 +5,9 @@
 - CMake 3.25+ and a C++20 compiler: MSVC 2022 on Windows (found by the Visual Studio generator,
   no developer prompt needed), GCC on Linux. `pip install cmake ninja` provides CMake if needed.
 - All build output goes to `build/` (git-ignored).
+- For real video only: an NVIDIA GPU, `python -m pip install -e ".[gpu]"` (onnxruntime-gpu with
+  the CUDA 13 and cuDNN libraries as pip packages, about 1.6 GB), the YOLO model in `models/` and
+  a clip filmed straight down in `data/` (both git-ignored; see below).
 
 ## Commands (from the repository root)
 C++ unit tests (CTest; presets in `CMakePresets.json`):
@@ -46,10 +49,26 @@ python -m aegislink.uav.main --no-preview --seconds 60 --seed 2
 
 The whole demo in one command: the proxy, the ground station window and the UAV; closing the
 window stops all three, and the window's frame times are printed as JSON. `--seconds 30
---snapshot logs/demo.png` closes it after 30 s and saves a picture of it.
+--snapshot logs/demo.png` closes it after 30 s and saves a picture of it; `--record logs/rec`
+saves the window 10 times a second as numbered JPEGs.
 ```
 python -m aegislink.tools.run_demo
 ```
+
+Real video with YOLO on the GPU. The model is exported once with Ultralytics, which is only
+needed for that (a separate environment keeps PyTorch out of this one); the clip used here is
+https://www.pexels.com/video/33269758/ (1920 x 1080, saved as `data/roundabout_tuzla.mp4`):
+```
+python -m pip install ultralytics onnx onnxslim
+python -c "from ultralytics import YOLO; YOLO('yolo26n-obb.pt').export(format='onnx', imgsz=(384, 640), nms=True, agnostic_nms=True)"
+```
+Move `yolo26n-obb.onnx` to `models/`, then:
+```
+python -m aegislink.uav.main --video data/roundabout_tuzla.mp4
+python -m aegislink.uav.main --video data/roundabout_tuzla.mp4 --no-preview --seconds 26
+python -m aegislink.tools.run_demo --video data/roundabout_tuzla.mp4
+```
+`--alt0` sets the altitude at the clip's first frame (default 55 m, from the size of its cars).
 The same by hand, in three terminals:
 ```
 ew_chaos_proxy --link 5600:5601 --link 5602:5603 --link 5604:5605 --control 5700
@@ -146,6 +165,18 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
   pose, positions and boxes agree within 1 px, and whose `traffic` holds every vehicle; tracks cover over 90 % of the vehicles in clear
   view with at most 1 id switch and under 1 % false track frames; the score counts switches,
   reacquisitions and false tracks; a seed repeats a run exactly. About 10 s.
+- `tests/test_video.py`: 4 s of the simulated flight (a turn and a climb), rendered and
+  registered frame to frame: the measured path stays within 0.5 m, 0.5 m of altitude and 0.5
+  degrees of the truth (a wrong sign in the heading or the wrong order of the chained transforms
+  fails it); a blank frame is bridged with the motion before it; a clip written to disk is
+  resized, played back and forth without a jump, starts at the origin heading north, and its
+  telemetry speed is the true speed within 5 %; a missing file is an error.
+- `tests/test_yolo_detector.py`: letterboxing (scale, padding, RGB order, grey 114); output rows
+  turned into upright boxes in frame pixels (a quarter turn swaps width and height, 45 degrees
+  gives the square around it), unsure rows, other classes and empty slots dropped, boxes clipped
+  at the image edge. With onnxruntime's CUDA provider, the model and the clip present (never on
+  CI, so skipped there): the model runs on the GPU, finds at least 15 car-sized boxes on the
+  clip's first frame (19 here) and takes under 15 ms per frame (median).
 - `tests/test_messages.py`: body sizes, round trips (centimetre latitude/longitude, wrapped ids,
   boxes outside the image), every decoder rejects a wrong length.
 - `tests/test_encoder.py`: gray 480 x 270 keyframe, padded and clipped patch boxes, patch close
@@ -181,10 +212,11 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
   messages not counted; patches only for listed tracks; the dashboard's numbers; the receiver
   thread receives, reports and stops; impossible altitudes (0, negative, NaN, infinite, 1e30)
   and headings (NaN, infinite) in telemetry, patches and keyframes dropped; a patch much larger
-  than its box dropped; `--snapshot` refused without the window. Ghost tracks: matched boxes
-  become ground positions (coasting ones are not measured), a track list before its telemetry
-  is measured when the telemetry comes, the UAV clock runs on and tracks turn GHOST in a silence
-  (and are counted in the numbers), a restart clears them, the view holds them predicted to
+  than its box dropped; `--snapshot` and `--record` refused without the window. Ghost tracks:
+  matched boxes become ground positions (coasting ones are not measured), a track list before
+  its telemetry is measured when the telemetry comes, the UAV clock runs on and tracks turn
+  GHOST in a silence (and are counted in the numbers), a track missing from a new list ends while
+  a listed coasting one stays (as a GHOST), a restart clears them, the view holds them predicted to
   now, the track log is written 30 times a second, the heading is interpolated the short way;
   telemetry repeating the held frame does not turn the UAV clock back.
 - `tests/test_spoof_detector.py`: keyframes recorded from a 40 s simulated flight (2 Hz). The
@@ -210,7 +242,8 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
   no ghost is drawn without a view pose.
 - `tests/test_dashboard.py` (Qt offscreen; skipped where Qt cannot load): frame-time statistics;
   the window draws both views (patch, background and baseline pixels where expected) in under
-  16.7 ms at the 95th percentile; a ghost drawn and counted while the link is silent; LINK
+  16.7 ms at the 95th percentile; `record` saves 9-11 numbered pictures of the window in 1 s,
+  the patch visible in them; a ghost drawn and counted while the link is silent; LINK
   LOST after a silence; GPS SPOOFED and the speeds while the alarm is on; the EW deck starts at
   the proxy's settings and sets loss, burst, rate, jitter, a blackout, a GPS drift, bearing and
   jump, and Clear on all three links of the real proxy; without a proxy it says so; bad replies (NaN, infinite, huge, missing stats keys)
@@ -242,4 +275,5 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
 ## CI
 `.github/workflows/ci.yml` runs on every push: Windows (`msvc` preset) and Ubuntu (`gcc-asan`
 preset), CTest, then `pip install ".[test]"` and pytest. On Ubuntu it installs the system
-libraries that Qt's offscreen platform needs for the dashboard tests.
+libraries that Qt's offscreen platform needs for the dashboard tests. It installs neither the
+`gpu` extra nor a model, so the YOLO test on the GPU is skipped there.
