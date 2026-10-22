@@ -268,11 +268,12 @@ def test_a_patch_much_larger_than_its_box_is_dropped(station):
     assert station.patches == {} and station.bad_messages == 1
 
 
-def test_snapshot_needs_the_window(tmp_path):
+@pytest.mark.parametrize("option", ["--snapshot", "--record"])
+def test_pictures_need_the_window(tmp_path, option):
     import subprocess
     import sys
     result = subprocess.run([sys.executable, "-m", "aegislink.gcs.main", "--no-view",
-                             "--snapshot", str(tmp_path / "x.png")], capture_output=True, timeout=30)
+                             option, str(tmp_path / "x")], capture_output=True, timeout=30)
     assert result.returncode == 2
 
 

@@ -57,6 +57,8 @@ def main():
     parser.add_argument("--summary", action="store_true",
                         help="print what arrived as JSON (needs --no-view)")
     parser.add_argument("--snapshot", type=Path, help="save the window as an image when it closes")
+    parser.add_argument("--record", type=Path,
+                        help="save the window as numbered JPEGs in this folder, 10 per second")
     parser.add_argument("--direct", action="store_true", help="report to the UAV, not the proxy")
     parser.add_argument("--fovea-port", type=int, default=config.FOVEA_TO_GCS)
     parser.add_argument("--baseline-port", type=int, default=config.BASELINE_TO_GCS)
@@ -71,8 +73,8 @@ def main():
     args = parser.parse_args()
     if args.summary and not args.no_view:
         parser.error("--summary needs --no-view")
-    if args.snapshot and args.no_view:
-        parser.error("--snapshot needs the window")
+    if (args.snapshot or args.record) and args.no_view:
+        parser.error("--snapshot and --record need the window")
     report_port = args.report_port or (config.REPORTS_TO_UAV if args.direct
                                        else config.REPORTS_TO_PROXY)
     station = GroundStation(args.fovea_port, args.baseline_port, report_port, args.motion_model,
@@ -84,7 +86,7 @@ def main():
             # Only the window needs Qt; the headless station runs without it.
             from aegislink.gcs import dashboard
             dashboard.run(station, None if args.direct else args.proxy_control, args.seconds,
-                          args.snapshot)
+                          args.snapshot, args.record)
     except KeyboardInterrupt:
         pass
     finally:

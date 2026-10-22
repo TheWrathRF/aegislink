@@ -26,6 +26,7 @@ from aegislink.uav.encoder import decode_image
 
 FRAME_INTERVAL_MS = 16
 STATUS_INTERVAL_MS = 125
+RECORD_INTERVAL_MS = 100
 PLOT_SECONDS = 60
 # No foveated datagram for this long and the view says so.
 LINK_LOST_S = 0.5
@@ -154,11 +155,13 @@ def nav_text(s):
 
 
 class Dashboard(QMainWindow):
-    def __init__(self, receiver, proxy=None, snapshot=None):
+    def __init__(self, receiver, proxy=None, snapshot=None, record=None):
         super().__init__()
         self.receiver = receiver
         self.proxy = proxy
         self.snapshot = snapshot    # where to save the window as an image when it closes
+        self.record = record        # a folder for a picture of the window every RECORD_INTERVAL_MS
+        self.recorded = 0
         self.clock = FrameClock()
         self.error = None                       # the last exception while drawing
         self._baseline = (None, None)           # (frame, decoded image)
@@ -223,8 +226,19 @@ class Dashboard(QMainWindow):
         self.frame_timer.timeout.connect(self.draw_frame)
         self.status_timer = QTimer(self)
         self.status_timer.timeout.connect(self.update_status)
+        self.record_timer = QTimer(self)
+        self.record_timer.setTimerType(Qt.TimerType.PreciseTimer)
+        self.record_timer.timeout.connect(self.save_picture)
+
+    def save_picture(self):
+        if self.recorded == 0:
+            self.record.mkdir(parents=True, exist_ok=True)
+        # JPEG: saving a PNG of the window takes a few frames' time.
+        self.grab().save(str(self.record / f"{self.recorded:05d}.jpg"), quality=90)
+        self.recorded += 1
 
     def closeEvent(self, event):
+        self.record_timer.stop()
         if self.snapshot is not None:
             self.snapshot.parent.mkdir(parents=True, exist_ok=True)
             self.grab().save(str(self.snapshot))
@@ -233,6 +247,8 @@ class Dashboard(QMainWindow):
     def start(self):
         self.frame_timer.start(FRAME_INTERVAL_MS)
         self.status_timer.start(STATUS_INTERVAL_MS)
+        if self.record is not None:
+            self.record_timer.start(RECORD_INTERVAL_MS)
 
     def _baseline_image(self, full_frame, size):
         """The newest baseline frame at `size`, decoded and scaled once per frame."""
@@ -335,14 +351,14 @@ def dark_palette(app):
     pg.setConfigOptions(background=BACKGROUND, foreground="#c8c8c8", antialias=True)
 
 
-def run(station, proxy_port=None, seconds=None, snapshot=None):
+def run(station, proxy_port=None, seconds=None, snapshot=None, record=None):
     """Shows the window until it is closed (or for `seconds`), then prints its frame times and
     the last second's numbers as one JSON line; returns the frame times."""
     app = QApplication.instance() or QApplication([])
     dark_palette(app)
     receiver = ReceiverThread(station)
     proxy = ProxyLink(proxy_port) if proxy_port is not None else None
-    window = Dashboard(receiver, proxy, snapshot)
+    window = Dashboard(receiver, proxy, snapshot, record)
     # Ctrl+C would otherwise raise inside a timer slot and end the process at once, without
     # stopping the receiver or printing the frame times.
     previous = signal.signal(signal.SIGINT, lambda *args: app.quit())
@@ -357,6 +373,7 @@ def run(station, proxy_port=None, seconds=None, snapshot=None):
         signal.signal(signal.SIGINT, previous)
         window.frame_timer.stop()
         window.status_timer.stop()
+        window.record_timer.stop()
         receiver.stop()
         if proxy is not None:
             proxy.close()

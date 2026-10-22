@@ -110,6 +110,25 @@ def test_window_draws_both_views_within_a_frame_time(app, station):
     window.close()
 
 
+def test_window_records_itself_ten_times_a_second(app, station, tmp_path):
+    fill(station)
+    window = Dashboard(ReceiverThread(station), record=tmp_path / "frames")
+    window.show()
+    window.start()
+    started = time.monotonic()
+    while time.monotonic() - started < 1.05:
+        app.processEvents()
+    window.close()
+    files = sorted((tmp_path / "frames").glob("*.jpg"))
+    assert 9 <= len(files) <= 11
+    assert [f.stem for f in files] == [f"{i:05d}" for i in range(len(files))]
+    image = cv2.imread(str(files[-1]))
+    assert image.shape[:2] == (window.height(), window.width())
+    # The red patch is in the recorded picture of the window.
+    red = (image[:, :, 2] > 200) & (image[:, :, 1] < 60) & (image[:, :, 0] < 60)
+    assert red.sum() > 100
+
+
 def test_a_ghost_is_drawn_and_counted_while_the_link_is_silent(app, station):
     fill(station, now_s=time.monotonic() - 1.0)
     window = Dashboard(ReceiverThread(station))
