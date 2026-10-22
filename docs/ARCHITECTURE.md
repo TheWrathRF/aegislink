@@ -594,3 +594,15 @@ The ports are the defaults (5600-5605, control 5700) or the same layout from `--
   `blackout` (three 5 s blackouts, 15 s apart, in 60 s), `spoof_drift` (a 3 m/s drift for 20 s
   and for 16 s), `spoof_jump` (a 50 m jump held for 15 s, twice) and `clean_10min` (no events,
   600 s: false alarms).
+- **Real clip**: `"video": "data/clip.mp4"` makes the UAV fly over that clip with YOLO
+  (`video_clean`, `video_kbps50`). The event clock then starts when the UAV says it has measured
+  the clip (its first output line), nothing is scored (a clip has no ground truth, so `tracks`
+  and `nav` are null), and `result.json` holds the UAV's own report under `uav`: frames, frame
+  rate and YOLO's time per frame (median and 95th percentile) with the provider it ran on.
+  `--seeds` is refused for a clip. In the live loop YOLO takes 11.6 ms per frame (median; 18.5
+  ms at the 95th percentile), more than the 7.6 ms alone, as the encoders, the proxy and the
+  station share the CPU.
+- Since a track that the UAV stops listing ends at the station, a blackout's samples come only
+  from tracks that were live when it began: the three `blackout` runs gave 3,949 samples (98.4 %
+  inside: 95.3, 100 and 100 % per run), where dropped tracks kept as ghosts for 10 s had given
+  6,153 (94.2 %).

@@ -99,6 +99,8 @@ python -m aegislink.tools.run_scenario scenarios/blackout.json
 python -m aegislink.tools.run_scenario scenarios/blackout.json --seeds 1 2 3
 python -m aegislink.tools.run_scenario scenarios/spoof_jump.json --seeds 1 2 3
 python -m aegislink.tools.run_scenario scenarios/clean_10min.json
+python -m aegislink.tools.run_scenario scenarios/video_clean.json
+python -m aegislink.tools.run_scenario scenarios/video_kbps50.json
 python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jsonl --tracks logs/scenarios/<run>/tracks.jsonl
 ```
 
@@ -270,7 +272,10 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
   missed; pooled over runs. Two short scenarios end to end (UAV, proxy, headless station): a
   3 s blackout (the silence is found, the tracks are scored with loose bounds, `result.json` is
   written, no GPS alarm), and a 50 m GPS jump (alarm within 3 s, no false alarm, the position
-  used within 2 m of the truth, cleared after the GPS is right again). About 35 s.
+  used within 2 m of the truth, cleared after the GPS is right again). About 35 s. A scenario
+  file's `video` must be a path. Where the GPU, the model and the clip are present, a short run
+  over the real clip (8 s, the links cut to 50 kbps halfway): tracks arrive, nothing is scored,
+  and the UAV's report says YOLO ran on CUDA under 15 ms per frame (about 20 s more).
 
 ## CI
 `.github/workflows/ci.yml` runs on every push: Windows (`msvc` preset) and Ubuntu (`gcc-asan`
