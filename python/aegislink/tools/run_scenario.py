@@ -15,6 +15,10 @@ it. The ground station measures for `seconds` after `warmup_s`. The logs and a r
 the station's summary, the track score and the GPS check's score (`evaluate`) go to a new folder
 under logs/scenarios. With --seeds the scenario runs once per seed (world, traffic and proxy),
 each in its own sub-folder, and the blackout samples and GPS checks of all runs are pooled.
+
+With "video": "data/clip.mp4" the UAV flies over that clip with YOLO instead (see uav/video.py).
+The event clock then starts once the UAV has measured the clip, nothing is scored (a clip has
+no ground truth), and result.json keeps the UAV's own report instead: YOLO's time per frame.
 """
 
 import argparse
@@ -43,6 +47,8 @@ def load(path):
     for event in scenario["events"]:
         if "at_s" not in event or not isinstance(event.get("set"), dict):
             raise ValueError(f"an event needs 'at_s' and 'set': {event}")
+    if "video" in scenario and not isinstance(scenario["video"], str):
+        raise ValueError("'video' is the path of a clip")
     scenario["events"].sort(key=lambda e: e["at_s"])
     return scenario
 
@@ -79,21 +85,26 @@ def run(scenario, out_dir, base_port=config.FOVEA_TO_PROXY):
                  "--report-port", str(p["reports_to_proxy"])],
                 stdout=subprocess.PIPE, text=True)
             processes.append(gcs)
+            video = ["--video", scenario["video"]] if "video" in scenario else []
             uav = subprocess.Popen(
                 [sys.executable, "-m", "aegislink.uav.main", "--no-preview", "--send",
                  "--seed", str(scenario["seed"]), "--seconds", str(uav_seconds),
                  "--log", str(truth_log), "--fovea-port", str(p["fovea_to_proxy"]),
                  "--baseline-port", str(p["baseline_to_proxy"]),
-                 "--report-port", str(p["reports_to_uav"])],
-                stdout=subprocess.DEVNULL)
+                 "--report-port", str(p["reports_to_uav"]), *video],
+                stdout=subprocess.PIPE if video else subprocess.DEVNULL, text=True)
             processes.append(uav)
+            if video:
+                # The UAV first measures the clip's camera path (seconds); the clock starts
+                # when it says it is ready.
+                uav.stdout.readline()
             started = time.monotonic()
             for event in scenario["events"]:
                 time.sleep(max(0.0, started + event["at_s"] - time.monotonic()))
                 for link in event.get("links", ALL_LINKS):
                     control.configure(link, **event["set"])
         summary_text, _ = gcs.communicate(timeout=uav_seconds + 30)
-        uav.wait(timeout=60)
+        uav_text, _ = uav.communicate(timeout=60)
     finally:
         for process in reversed(processes):
             if process.poll() is None:
@@ -104,10 +115,17 @@ def run(scenario, out_dir, base_port=config.FOVEA_TO_PROXY):
                     process.kill()
     lines = summary_text.strip().splitlines()
     summary = json.loads(lines[-1]) if lines else {"error": "no summary"}
-    truth, samples = evaluate.Truth.read(truth_log), evaluate.read_jsonl(track_log)
-    result = {"scenario": scenario, "summary": summary,
-              "tracks": evaluate.ghost_consistency(truth, samples),
-              "nav": evaluate.spoof_detection(truth, samples)}
+    if video:
+        # A clip has no ground truth to score against; the UAV's own report (YOLO's time per
+        # frame) is kept instead.
+        reports = [line for line in (uav_text or "").splitlines() if line.startswith("{")]
+        result = {"scenario": scenario, "summary": summary, "tracks": None, "nav": None,
+                  "uav": json.loads(reports[-1]) if reports else {"error": "no UAV report"}}
+    else:
+        truth, samples = evaluate.Truth.read(truth_log), evaluate.read_jsonl(track_log)
+        result = {"scenario": scenario, "summary": summary,
+                  "tracks": evaluate.ghost_consistency(truth, samples),
+                  "nav": evaluate.spoof_detection(truth, samples)}
     (out_dir / "result.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     return result
 
@@ -142,12 +160,14 @@ def main():
                         help="run once per seed instead of with the scenario's own seed")
     args = parser.parse_args()
     scenario = load(args.scenario)
+    if "video" in scenario and args.seeds:
+        parser.error("--seeds varies the synthetic world; a clip is always the same")
     out = args.out or (Path("logs") / "scenarios"
                        / f"{scenario['name']}_{time.strftime('%Y%m%d_%H%M%S')}")
     if not args.seeds:
         result = run(scenario, out, args.base_port)
-        print(json.dumps({"out": str(out), "summary": result["summary"],
-                          "tracks": result["tracks"], "nav": result["nav"]}))
+        printed = {key: result[key] for key in ("summary", "tracks", "nav", "uav") if key in result}
+        print(json.dumps({"out": str(out), **printed}))
         return
     results = []
     for seed in args.seeds:

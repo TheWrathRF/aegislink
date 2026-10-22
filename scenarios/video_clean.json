@@ -1,0 +1,8 @@
+{
+  "name": "video_clean",
+  "description": "The real roundabout clip with YOLO on a clean link",
+  "seconds": 25,
+  "warmup_s": 5,
+  "video": "data/roundabout_tuzla.mp4",
+  "events": []
+}

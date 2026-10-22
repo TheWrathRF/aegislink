@@ -1,0 +1,8 @@
+{
+  "name": "video_kbps50",
+  "description": "The real roundabout clip with YOLO, all links limited to 50 kbps from the start",
+  "seconds": 25,
+  "warmup_s": 5,
+  "video": "data/roundabout_tuzla.mp4",
+  "events": [{"at_s": 0, "set": {"kbps": 50}}]
+}

@@ -296,8 +296,9 @@ def main():
         clip = VideoClip(args.video, NadirCamera(), args.alt0)
         detector = YoloDetector(args.model)
         sim = VideoUav(clip, detector)
+        # Flushed: a scenario run waits for this line before it starts its clock.
         print(f"clip: {len(clip)} frames, camera path measured in "
-              f"{time.perf_counter() - started:.1f} s; YOLO on {detector.provider}")
+              f"{time.perf_counter() - started:.1f} s; YOLO on {detector.provider}", flush=True)
     streamer = None
     if args.send:
         fovea = args.fovea_port or (config.FOVEA_TO_GCS if args.direct else config.FOVEA_TO_PROXY)
@@ -318,9 +319,11 @@ def main():
               f"false track frames: {score.false_track_frames}")
     else:
         ms = 1000 * np.array(sim.detect_seconds)
-        print(f"ran {elapsed:.1f} s, {sim.index} frames ({sim.index / elapsed:.1f} per second); "
-              f"YOLO per frame: median {np.median(ms):.1f} ms, 95th percentile "
-              f"{np.percentile(ms, 95):.1f} ms")
+        print(json.dumps({"seconds": round(elapsed, 1), "frames": sim.index,
+                          "fps": round(sim.index / elapsed, 1),
+                          "yolo_provider": sim.detector.provider,
+                          "yolo_median_ms": round(float(np.median(ms)), 2),
+                          "yolo_p95_ms": round(float(np.percentile(ms, 95)), 2)}))
     if streamer:
         sent = streamer.scheduler.sent
         print(f"sent: foveated {streamer.sent_bytes['fovea'] * 8 / elapsed / 1000:.1f} kbps "

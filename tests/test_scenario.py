@@ -136,6 +136,15 @@ def test_scenario_files_are_checked_and_completed(tmp_path):
             run_scenario.load(path)
 
 
+def test_a_video_scenario_names_its_clip(tmp_path):
+    path = tmp_path / "v.json"
+    path.write_text(json.dumps({"seconds": 10, "video": "data/clip.mp4"}))
+    assert run_scenario.load(path)["video"] == "data/clip.mp4"
+    path.write_text(json.dumps({"seconds": 10, "video": 3}))
+    with pytest.raises(ValueError):
+        run_scenario.load(path)
+
+
 def test_the_shipped_scenarios_load():
     from pathlib import Path
     files = sorted(Path(__file__).resolve().parent.parent.glob("scenarios/*.json"))
@@ -169,6 +178,28 @@ def test_a_short_blackout_scenario_end_to_end(tmp_path):
     assert saved["tracks"] == tracks
     assert (tmp_path / "ground_truth.jsonl").stat().st_size > 0
     assert result["nav"]["spoof_onsets"] == 0 and result["nav"]["false_alarms"] == 0
+
+
+def test_a_short_video_scenario_end_to_end(tmp_path):
+    """The UAV over the real clip with YOLO on the GPU (skipped without the GPU, the model or the
+    clip): the tracks arrive, then a 50 kbps limit stops the baseline; the UAV's report is kept."""
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    clip = root / "data" / "roundabout_tuzla.mp4"
+    ort = pytest.importorskip("onnxruntime")
+    if ("CUDAExecutionProvider" not in ort.get_available_providers()
+            or not (root / "models" / "yolo26n-obb.onnx").is_file() or not clip.is_file()):
+        pytest.skip("no GPU, model or clip")
+    scenario = {"name": "video", "seconds": 8, "warmup_s": 2, "seed": 1, "video": str(clip),
+                "events": [{"at_s": 6, "set": {"kbps": 50}}]}
+    result = run_scenario.run(scenario, tmp_path, free_port_block())
+    summary, uav = result["summary"], result["uav"]
+    assert summary["bad_messages"] == 0 and summary["tracks_hz"] > 5
+    assert result["tracks"] is None and result["nav"] is None
+    assert uav["yolo_provider"] == "CUDAExecutionProvider" and uav["yolo_median_ms"] < 15
+    assert uav["frames"] > 200
+    saved = json.loads((tmp_path / "result.json").read_text())
+    assert saved["uav"] == uav
 
 
 def test_a_short_gps_jump_scenario_end_to_end(tmp_path):
