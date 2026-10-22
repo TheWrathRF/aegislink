@@ -328,6 +328,27 @@ def test_tracks_turn_ghost_when_the_link_goes_silent(station):
     assert station.ghost_estimates(last + 10.5) == [] and station.ghosts.tracks == {}
 
 
+def test_a_track_the_uav_stops_listing_ends_but_a_coasting_one_stays(station):
+    for frame in range(30, 40):
+        deliver(station, MsgType.TELEMETRY, telemetry_at(frame), frame / 30)
+        deliver(station, MsgType.TRACKS, messages.encode_tracks(frame, [
+            messages.TrackBox(1, centre_box(), True),
+            messages.TrackBox(2, centre_box(dx=100), True),
+            messages.TrackBox(3, centre_box(dx=-100), True)]), frame / 30)
+    # Track 2 left the UAV's list (its vehicle left the view); track 3 is still listed, coasting.
+    for frame in range(40, 60):
+        deliver(station, MsgType.TELEMETRY, telemetry_at(frame), frame / 30)
+        deliver(station, MsgType.TRACKS, messages.encode_tracks(frame, [
+            messages.TrackBox(1, centre_box(), True),
+            messages.TrackBox(3, centre_box(dx=-100), False)]), frame / 30)
+    estimates = {e.id: e for e in station.ghost_estimates(59 / 30)}
+    assert set(estimates) == {1, 3} and set(station.ghosts.tracks) == {1, 3}
+    assert estimates[1].state == "LIVE" and estimates[3].state == "GHOST"
+    # In a silence no list arrives, so nothing ends: both turn into ghosts.
+    assert {e.id: e.state for e in station.ghost_estimates(59 / 30 + 2)} == {1: "GHOST",
+                                                                             3: "GHOST"}
+
+
 def test_a_restarted_uav_clears_the_ghost_tracks(station):
     deliver(station, MsgType.TELEMETRY, telemetry_at(900), now_s=1.0)
     deliver(station, MsgType.TRACKS, messages.encode_tracks(

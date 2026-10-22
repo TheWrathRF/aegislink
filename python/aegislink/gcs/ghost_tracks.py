@@ -8,7 +8,8 @@ their frame are measurements; a coasting box is the UAV tracker's own guess.
 
 A track is LIVE while measurements arrive, GHOST when the last one (the last fix) is more than
 GHOST_AFTER_S old: the filter only predicts and its ellipse grows. It is LOST, and forgotten, when
-the last fix is LOST_AFTER_S old or the ellipse has grown past MAX_SEMI_AXIS_M. At most MAX_TRACKS
+the last fix is LOST_AFTER_S old or the ellipse has grown past MAX_SEMI_AXIS_M, and it ends at
+once when a track list arrives without it (the UAV dropped the track itself). At most MAX_TRACKS
 are kept: a track list can hold 255 ids, and a forged one must not fill the station with filters
 that every drawn frame has to work through.
 """
@@ -154,6 +155,11 @@ class GhostTracks:
             if box.seen:
                 position, r = box_measurement(self.camera, pose, box.box)
                 self.measure(box.id, t, position, r)
+
+    def keep_only(self, track_ids):
+        """Ends the tracks the UAV no longer lists: it has dropped them itself (the vehicle left
+        the view or went undetected too long), so they are not waiting for the link."""
+        self.tracks = {i: track for i, track in self.tracks.items() if i in track_ids}
 
     def prune(self, t):
         """Forgets the tracks that are LOST at time `t`."""

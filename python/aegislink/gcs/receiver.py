@@ -283,8 +283,9 @@ class GroundStation:
             if not self._newer(frame, self.tracks_frame, now_s):
                 return OLD
             self.tracks_frame, self.tracks = frame, tracks
-            self._measure(frame, tracks)
             ids = {t.id for t in tracks}
+            self.ghosts.keep_only(ids)
+            self._measure(frame, tracks)
             self.patches = {tid: p for tid, p in self.patches.items() if tid in ids}
         elif msg_type == MsgType.ROI_PATCH:
             x1, y1, x2, y2 = body.box
