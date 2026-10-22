@@ -13,6 +13,8 @@ box and patch move to where its filter predicts the vehicle now, so during a bla
 vehicles keep moving over the frozen background.
 """
 
+import functools
+
 import cv2
 import numpy as np
 
@@ -139,11 +141,15 @@ def track_boxes(view, scale):
     return result
 
 
+# Patches come in a few sizes, so their masks are made once (read-only, shared).
+@functools.lru_cache(maxsize=256)
 def _feather(width, height):
     x = np.arange(width)
     y = np.arange(height)
     edge = np.minimum.outer(np.minimum(y, y[::-1]), np.minimum(x, x[::-1]))
-    return np.clip((edge + 0.5) / FEATHER_PX, 0, 1).astype(np.float32)
+    mask = np.clip((edge + 0.5) / FEATHER_PX, 0, 1).astype(np.float32)
+    mask.setflags(write=False)
+    return mask
 
 
 def _box_centre_in_crop(lo, hi, box_size, limit):
@@ -158,11 +164,15 @@ def _box_centre_in_crop(lo, hi, box_size, limit):
     return (lo + hi - 1) / 2
 
 
-def _paste(canvas, patch, box, view, out):
+def _paste(canvas, patch, box, view, out, motions):
     """Pastes a patch so that its track's box lands on `box` (view pixels), turned and scaled
-    with the camera's motion since the patch was taken."""
+    with the camera's motion since the patch was taken. `motions` holds the motions already
+    worked out for this view: patches of one frame share theirs."""
     msg = patch.msg
-    motion = _motion(view, msg.frame, msg.alt_m, msg.heading_deg)
+    key = (msg.frame, msg.alt_m, msg.heading_deg)
+    if key not in motions:
+        motions[key] = _motion(view, *key)
+    motion = motions[key]
     if motion is None:
         return
     a = motion[:2, :2]
@@ -213,10 +223,11 @@ def render_fovea(view, size, boxes=True):
     view_pose = _view_pose(view)
     ghosts = {e.id: e for e in view.ghosts}
     view_boxes = _ghost_boxes(_view_boxes(view), ghosts, view_pose)
+    motions = {}
     for track, box in view_boxes:
         patch = view.patches.get(track.id)
         if patch is not None:
-            _paste(canvas, patch, box, view, out)
+            _paste(canvas, patch, box, view, out, motions)
     if boxes:
         for track, box in view_boxes:
             corners = np.clip(_apply(out, [box[:2], box[2:]]), -10 * w, 10 * w)
