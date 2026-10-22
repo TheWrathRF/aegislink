@@ -41,7 +41,12 @@ def main():
     parser.add_argument("--seed", type=int, default=1, help="world and detector seed")
     parser.add_argument("--seconds", type=float, help="close the window after this long")
     parser.add_argument("--snapshot", type=Path, help="save the window as an image when it closes")
+    parser.add_argument("--record", type=Path,
+                        help="save the window as numbered JPEGs in this folder, 10 per second")
     parser.add_argument("--log", type=Path, help="the UAV's ground-truth log (default: logs/...)")
+    parser.add_argument("--video", type=Path,
+                        help="fly over this clip with YOLO instead of the synthetic world")
+    parser.add_argument("--alt0", type=float, help="altitude in metres at the clip's first frame")
     parser.add_argument("--base-port", type=int, default=config.FOVEA_TO_PROXY,
                         help="first of the six link ports; control is this + 100")
     args = parser.parse_args()
@@ -68,16 +73,22 @@ def main():
             gcs_args += ["--seconds", str(args.seconds)]
         if args.snapshot is not None:
             gcs_args += ["--snapshot", str(args.snapshot)]
+        if args.record is not None:
+            gcs_args += ["--record", str(args.record)]
         gcs = subprocess.Popen([sys.executable, "-m", "aegislink.gcs.main", *gcs_args])
         processes.append(gcs)
         uav_seconds = UAV_SECONDS if args.seconds is None else args.seconds + 10
-        log = [] if args.log is None else ["--log", str(args.log)]
+        uav_args = [] if args.log is None else ["--log", str(args.log)]
+        if args.video is not None:
+            uav_args += ["--video", str(args.video)]
+            if args.alt0 is not None:
+                uav_args += ["--alt0", str(args.alt0)]
         processes.append(subprocess.Popen(
             [sys.executable, "-m", "aegislink.uav.main", "--no-preview", "--send",
              "--seed", str(args.seed), "--seconds", str(uav_seconds),
              "--fovea-port", str(p["fovea_to_proxy"]),
              "--baseline-port", str(p["baseline_to_proxy"]),
-             "--report-port", str(p["reports_to_uav"]), *log],
+             "--report-port", str(p["reports_to_uav"]), *uav_args],
             stdout=subprocess.DEVNULL))
         gcs.wait()
         return_code = gcs.returncode

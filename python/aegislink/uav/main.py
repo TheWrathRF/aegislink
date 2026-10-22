@@ -3,8 +3,9 @@
     python -m aegislink.uav.main                 # OpenCV preview window (q or Esc quits)
     python -m aegislink.uav.main --no-preview --seconds 60
     python -m aegislink.uav.main --send          # also stream to the GCS through the proxy
+    python -m aegislink.uav.main --video data/clip.mp4   # a real clip with YOLO on the GPU
 
-Every run writes the ground truth (UAV pose, the vehicles near the camera and where every vehicle
+Every run over the synthetic world writes the ground truth (UAV pose, the vehicles near the camera and where every vehicle
 is, one JSON object per frame) to logs/, and prints how well the tracks matched the true
 vehicles. With --send it runs in real time and streams the foveated and the baseline video (see
 aegislink.common.config).
@@ -17,6 +18,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
+import numpy as np
 
 from aegislink._core import MsgType
 from aegislink.common import config
@@ -27,6 +29,8 @@ from aegislink.uav.sim_world import World, WorldConfig
 from aegislink.uav.streamer import Streamer
 from aegislink.uav.telemetry import Flight
 from aegislink.uav.tracker import IouTracker, iou
+from aegislink.uav.video import VideoClip
+from aegislink.uav.yolo_detector import DEFAULT_MODEL
 
 
 @dataclass
@@ -73,6 +77,34 @@ class UavSim:
                              vehicles, detections, tracks, traffic)
         self.world.step(1 / FPS)
         self.flight.step(1 / FPS)
+        self.last_pose = pose
+        self.index += 1
+        return result
+
+
+class VideoUav:
+    """Plays a real clip as the camera (see uav/video.py) and finds the vehicles with YOLO. A clip
+    has no ground truth, so its frames carry no truths and nothing is scored."""
+
+    def __init__(self, clip, detector):
+        self.clip = clip
+        self.camera = NadirCamera()
+        self.detector = detector
+        self.tracker = IouTracker()
+        self.index = 0
+        self.last_pose = None
+        self.detect_seconds = []
+
+    def step(self):
+        t = self.index / FPS
+        frame, pose = self.clip.frame(self.index)
+        started = time.perf_counter()
+        detections = self.detector.detect(frame)
+        self.detect_seconds.append(time.perf_counter() - started)
+        motion = self.camera.motion_matrix(self.last_pose, pose) if self.last_pose else None
+        tracks = self.tracker.update(detections, motion)
+        result = FrameResult(self.index, t, frame, pose, self.clip.telemetry(self.index, t), [],
+                             {}, detections, tracks, [])
         self.last_pose = pose
         self.index += 1
         return result
@@ -199,21 +231,25 @@ def draw_overlay(r):
     return image
 
 
-def run(seconds=60.0, seed=1, preview=True, log_path=None, streamer=None):
+def run(seconds=60.0, seed=1, preview=True, log_path=None, streamer=None, sim=None):
     """Runs the loop for `seconds` of simulated time and returns the TrackScore. The preview and
-    the streamer pace it to real time."""
-    if log_path is None:
-        log_path = Path("logs") / f"ground_truth_{time.strftime('%Y%m%d_%H%M%S')}.jsonl"
-    sim = UavSim(seed=seed)
-    log = GroundTruthLog(log_path, sim)
-    score = TrackScore()
+    the streamer pace it to real time. `sim` replaces the synthetic world (a VideoUav); it has no
+    ground truth, so then nothing is logged or scored and None is returned."""
+    log = score = None
+    if sim is None:
+        if log_path is None:
+            log_path = Path("logs") / f"ground_truth_{time.strftime('%Y%m%d_%H%M%S')}.jsonl"
+        sim = UavSim(seed=seed)
+        log = GroundTruthLog(log_path, sim)
+        score = TrackScore()
     next_time = time.perf_counter()
     try:
         for _ in range(int(seconds * FPS)):
             captured_us = time.monotonic_ns() // 1000
             r = sim.step()
-            log.write(r)
-            score.add(r.truths, r.tracks)
+            if log:
+                log.write(r)
+                score.add(r.truths, r.tracks)
             if streamer:
                 streamer.send(r, time.monotonic(), captured_us)
             next_time += 1 / FPS
@@ -225,7 +261,8 @@ def run(seconds=60.0, seed=1, preview=True, log_path=None, streamer=None):
             elif streamer:
                 time.sleep(max(0.0, next_time - time.perf_counter()))
     finally:
-        log.close()
+        if log:
+            log.close()
         if preview:
             cv2.destroyAllWindows()
     return score
@@ -244,7 +281,23 @@ def main():
     parser.add_argument("--baseline-port", type=int, help="where the baseline stream goes")
     parser.add_argument("--report-port", type=int, default=config.REPORTS_TO_UAV,
                         help="where receiver reports arrive")
+    parser.add_argument("--video", type=Path,
+                        help="fly over this clip (looking straight down) with YOLO, not the world")
+    parser.add_argument("--alt0", type=float, default=55.0,
+                        help="altitude in metres at the clip's first frame")
+    parser.add_argument("--model", type=Path, default=DEFAULT_MODEL, help="YOLO ONNX model")
     args = parser.parse_args()
+    sim = None
+    if args.video:
+        # Imported here: onnxruntime is only needed with --video.
+        from aegislink.uav.yolo_detector import YoloDetector
+
+        started = time.perf_counter()
+        clip = VideoClip(args.video, NadirCamera(), args.alt0)
+        detector = YoloDetector(args.model)
+        sim = VideoUav(clip, detector)
+        print(f"clip: {len(clip)} frames, camera path measured in "
+              f"{time.perf_counter() - started:.1f} s; YOLO on {detector.provider}")
     streamer = None
     if args.send:
         fovea = args.fovea_port or (config.FOVEA_TO_GCS if args.direct else config.FOVEA_TO_PROXY)
@@ -253,15 +306,21 @@ def main():
         streamer = Streamer(fovea, baseline, args.report_port, baseline=not args.no_baseline)
     started = time.perf_counter()
     try:
-        score = run(args.seconds, args.seed, not args.no_preview, args.log, streamer)
+        score = run(args.seconds, args.seed, not args.no_preview, args.log, streamer, sim)
     finally:
         if streamer:
             streamer.close()
     elapsed = time.perf_counter() - started
-    print(f"ran {elapsed:.1f} s; vehicles in clear view: "
-          f"{score.truth_frames} frames, covered by a track: {score.coverage:.1%}, "
-          f"id switches: {score.id_switches}, reacquired after a long gap: {score.reacquired}, "
-          f"false track frames: {score.false_track_frames}")
+    if score:
+        print(f"ran {elapsed:.1f} s; vehicles in clear view: "
+              f"{score.truth_frames} frames, covered by a track: {score.coverage:.1%}, "
+              f"id switches: {score.id_switches}, reacquired after a long gap: {score.reacquired}, "
+              f"false track frames: {score.false_track_frames}")
+    else:
+        ms = 1000 * np.array(sim.detect_seconds)
+        print(f"ran {elapsed:.1f} s, {sim.index} frames ({sim.index / elapsed:.1f} per second); "
+              f"YOLO per frame: median {np.median(ms):.1f} ms, 95th percentile "
+              f"{np.percentile(ms, 95):.1f} ms")
     if streamer:
         sent = streamer.scheduler.sent
         print(f"sent: foveated {streamer.sent_bytes['fovea'] * 8 / elapsed / 1000:.1f} kbps "
