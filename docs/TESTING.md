@@ -235,10 +235,12 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
   1 s, cleared after 5 agreeing ones; during 35 s of alarm the flow path stays within 1 m of the
   true position while the GPS ends 100 m off; the flow path interpolates and carries on; pairs
   the flow cannot follow, or too far apart, decide nothing; a repeated keyframe changes nothing;
-  a 50 m jump inside a 4 s gap between keyframes raises the alarm at the third pair after it
-  (also at the station), while three gaps of 4-7 s on the clean flight raise none; after 20 s
-  without keyframes, pairs 2 s apart are followed again (with the GPS velocity as the search
-  guess) and raise no alarm.
+  a 50 m jump inside a 4 s gap between keyframes raises the alarm at the third keyframe after
+  it (also at the station), a 100 m jump inside a 6.5 s gap (too far apart to compare) once the
+  coasted chain sees it, and a 50 m jump while keyframes come 3-6 s apart (as after a rate limit
+  is lifted) through the check of the pair alone; the same keyframe spacing and three gaps of
+  4-7 s on the clean flight raise none; after 20 s without keyframes, pairs 2 s apart are
+  followed again (with the GPS velocity as the search guess) and raise no alarm.
   The station: with the GPS 50 m off, every position the view uses comes from the flow, the
   stats and the track log show the alarm, it uses the GPS again once it agrees, and one forged
   telemetry with an old frame number (a fake restart) does not end the alarm. Removing

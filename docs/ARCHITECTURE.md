@@ -471,8 +471,9 @@ camera really moved. The check compares the two at every new keyframe.
   ground point is old position + old offset = new position + new offset, so every point gives
   the displacement old offset - new offset. Points more than 1 m from the median displacement
   are dropped (moving vehicles, wrong matches), and the mean of the rest is the displacement;
-  its covariance is their spread over their number plus a floor of (0.1 m)^2 per axis for
-  errors that all points share. Fewer than 30 points left: no result.
+  its covariance is their spread over their number plus a floor for errors that all points
+  share: 0.1 m per axis for keyframes 0.5 s apart, growing in proportion to the time between
+  them (those errors grow with the distance flown). Fewer than 30 points left: no result.
 - The search windows start where an expected displacement puts the points: the last flow
   velocity times the time between the keyframes, or the GPS velocity of the previous pair if
   the flow has none yet or could not follow the previous pair (after a long gap the old flow
@@ -485,12 +486,18 @@ camera really moved. The check compares the two at every new keyframe.
   freedom) makes the keyframe suspect.
 - After a keyframe that agrees, the chain is tied to its GPS position again. After a suspect one
   it is not, so a jump stays in the residual of every later keyframe, and a drift grows in it.
+- **The pair on its own**: while the chain starts at a trusted keyframe, each pair the flow
+  follows is also checked alone: the GPS's displacement over the pair against the flow's, with
+  only the pair's own uncertainty. After a coast (below) the chain's uncertainty can hide a
+  jump made within the pair; the pair check still sees it, and the chain then starts again at
+  the older keyframe's GPS position (from before the jump), so the jump stays in the residual
+  of the keyframes after it.
 - **Alarm**: 3 suspect keyframes in a row (in the `spoof_drift` and `spoof_jump` scenario runs,
   1.3-1.8 s after the spoofing started). While it is on, the chain is
   never tied to the GPS, and `fallback` is a `FlowPath`: the chain's position at each keyframe
   since the last trusted one, a straight line in between, and after the newest one the last
   flow velocity. 5 keyframes in a row that agree with the GPS again clear it.
-- A pair the flow cannot follow, or more than 3 s apart, decides nothing: the chain is carried
+- A pair the flow cannot follow, or more than 5 s apart, decides nothing: the chain is carried
   on with the last flow velocity, its uncertainty growing by 3 m/s per second, and the next
   pair the flow follows is compared against it. It is not tied to the GPS there: a jump made
   while keyframes were sparse would become the reference, and every later pair would agree
@@ -498,11 +505,14 @@ camera really moved. The check compares the two at every new keyframe.
   keyframe. A keyframe of the frame already checked is ignored; an older one (the UAV started
   again) starts everything again.
 - It only works where keyframes arrive: on a slow link they come seconds apart (the 15 % budget
-  share), and a total blackout brings none. A jump made during such a gap is found once pairs
-  can be compared again, if it stands out from the coasted uncertainty (3 m per second of gap,
-  one sigma per axis): a 50 m jump in a 4 s gap does. After a long stretch of sparse keyframes,
-  such as the seconds after a rate limit is lifted while the budget grows back, the uncertainty
-  can exceed the jump, and the jump is accepted. A drift slow
+  share), and a total blackout brings none. A jump made within a pair the flow follows (up to
+  5 s apart) is found by the pair check. One made within a longer gap is found only if it
+  stands out from the coasted uncertainty (3 m per second of gap, one sigma per axis). After a
+  rate limit is lifted, keyframes stay seconds apart while the budget grows back: a jump can
+  then fall into a pair too long to compare, the GPS velocity over that pair (which holds the
+  jump) misplaces the search windows of the next pair so that it fails too, and by the first
+  pair the flow follows again the coasted uncertainty can exceed the jump, which is then
+  accepted. A drift slow
   enough that each pair's residual stays under the threshold is not caught, because the chain
   is tied to the GPS at every keyframe that agrees.
 

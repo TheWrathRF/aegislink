@@ -5,7 +5,9 @@ keyframes show how the camera really moved: optical flow between two keyframes, 
 altitude and heading they carry, gives the ground distance the UAV flew between them, without
 the GPS. Chained from keyframe to keyframe (visual odometry), it is compared with the GPS:
 
-- After a keyframe whose GPS and flow agree, the chain is tied to the GPS there again.
+- After a keyframe whose GPS and flow agree, the chain is tied to the GPS there again. Each pair
+  is also checked on its own (GPS against flow over just that pair), which still sees a jump
+  when the chain's uncertainty has grown (see below).
 - A keyframe where they disagree (squared Mahalanobis distance d2 above 9.21, the 99 % point of
   the chi-square distribution with 2 degrees of freedom) is suspect; the chain keeps running from
   the last keyframe that agreed, so a jump stays visible in every later keyframe and a drift
@@ -36,13 +38,16 @@ KEYFRAME_CAMERA = NadirCamera(*KEYFRAME_SIZE)
 CHI2_99 = 9.21
 ALARM_AFTER = 3
 CLEAR_AFTER = 5
-MAX_PAIR_S = 3.0
+MAX_PAIR_S = 5.0
 MAX_CORNERS = 200
 MIN_INLIERS = 30
 # Points that moved this far from the median are on moving vehicles (or tracked wrongly).
 INLIER_M = 1.0
-# Per axis and keyframe pair: the flow's spread underestimates errors shared by all points.
+# Per axis, for keyframes FLOOR_PAIR_S apart (2 Hz) and growing with the time between them: the
+# flow's spread underestimates errors shared by all points, and those grow with the distance
+# flown. With a fixed floor, 1 % of clean pairs 4-5 s apart looked like spoofing.
 FLOW_FLOOR_M = 0.1
+FLOOR_PAIR_S = 0.5
 GPS_SIGMA_M = 0.05
 # When a pair cannot be followed, the chain is carried on by the last velocity with this much
 # more uncertainty per second.
@@ -59,10 +64,12 @@ class Flow:
     tracked: int
 
 
-def flow_displacement(old_image, old_attitude, new_image, new_attitude, guess=(0.0, 0.0)):
+def flow_displacement(old_image, old_attitude, new_image, new_attitude, guess=(0.0, 0.0),
+                      floor_m=FLOW_FLOOR_M):
     """How far the camera moved from the old keyframe to the new one, from optical flow: Flow,
     or None when too few points could be followed. Attitudes are (alt, heading_deg); `guess` is
-    the expected displacement, which places the search windows."""
+    the expected displacement, which places the search windows; `floor_m` is the least
+    uncertainty per axis."""
     corners = cv2.goodFeaturesToTrack(old_image, MAX_CORNERS, 0.01, 8, blockSize=7)
     if corners is None or len(corners) < MIN_INLIERS:
         return None
@@ -86,7 +93,7 @@ def flow_displacement(old_image, old_attitude, new_image, new_attitude, guess=(0
     inliers = moved[np.linalg.norm(moved - np.median(moved, axis=0), axis=1) < INLIER_M]
     if len(inliers) < MIN_INLIERS:
         return None
-    cov = np.cov(inliers.T) / len(inliers) + FLOW_FLOOR_M ** 2 * np.eye(2)
+    cov = np.cov(inliers.T) / len(inliers) + floor_m ** 2 * np.eye(2)
     return Flow(inliers.mean(axis=0), cov, len(inliers), int(ok.sum()))
 
 
@@ -189,7 +196,8 @@ class SpoofDetector:
         flow = None
         if dt <= MAX_PAIR_S:
             flow = flow_displacement(old.image, old.attitude, image, new.attitude,
-                                     tuple(np.array(expected) * dt))
+                                     tuple(np.array(expected) * dt),
+                                     FLOW_FLOOR_M * max(1.0, dt / FLOOR_PAIR_S))
         self.followed = flow is not None
         if flow is None:
             self.undecided += 1
@@ -209,6 +217,18 @@ class SpoofDetector:
         residual = gps - position
         s = cov + GPS_SIGMA_M ** 2 * np.eye(2)
         self.d2 = float(residual @ np.linalg.solve(s, residual))
+        if not self.alarm and self.suspect == 0:
+            # The pair on its own, while the chain starts at a trusted keyframe: after a coast
+            # the chain's uncertainty can hide a jump made within this pair, which the GPS's
+            # own displacement over the pair still shows.
+            pair = (gps - old.gps) - flow.displacement
+            pair_s = flow.cov + 2 * GPS_SIGMA_M ** 2 * np.eye(2)
+            pair_d2 = float(pair @ np.linalg.solve(pair_s, pair))
+            if pair_d2 > CHI2_99 >= self.d2:
+                # The GPS jumped after the old keyframe: measure on from there, so the jump stays
+                # in the residual of every later keyframe.
+                self._tie(old.frame, old.gps)
+                position, cov, self.d2 = old.gps + flow.displacement, flow.cov, pair_d2
         if self.d2 > CHI2_99:
             self.suspect, self.agree = self.suspect + 1, 0
         else:

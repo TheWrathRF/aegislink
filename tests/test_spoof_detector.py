@@ -235,17 +235,27 @@ def without(flight, start_s, end_s):
 
 
 def test_a_jump_inside_a_gap_raises_the_alarm_once_keyframes_return(flight):
-    # 10.0 -> 14.0 s is too far apart to compare; the GPS jumps 50 m at 12 s, in between.
+    # 10.0 -> 14.0 s is compared directly; the GPS jumps 50 m at 12 s, in between.
     detector, out = run(without(flight, 10.0, 14.0), lambda t: (0.0, 50.0) if t >= 12.0 else (0.0, 0.0))
+    assert detector.undecided == 0
+    first = next(t for t, alarm, _, _ in out if alarm)
+    assert first == pytest.approx(15.0)                 # keyframes at 14.0, 14.5, 15.0
+    assert detector.alarm and detector.alarms == 1
+
+
+def test_a_jump_inside_a_gap_too_long_to_compare_is_seen_through_the_coast(flight):
+    # 10.0 -> 16.5 s is too far apart; the chain coasts (about 20 m per axis) and the 100 m jump
+    # at 13 s stands out at the pairs after it.
+    detector, out = run(without(flight, 10.0, 16.5), lambda t: (0.0, 100.0) if t >= 13.0 else (0.0, 0.0))
     assert detector.undecided == 1
     first = next(t for t, alarm, _, _ in out if alarm)
-    assert first == pytest.approx(15.5)                 # keyframes at 14.5, 15.0, 15.5
+    assert first == pytest.approx(18.0)                 # 16.5 ends the gap; 17.0, 17.5, 18.0
     assert detector.alarm and detector.alarms == 1
 
 
 def test_gaps_between_keyframes_raise_no_alarm_on_a_clean_flight(flight):
     detector, out = run(without(without(without(flight, 5.0, 9.0), 15.0, 20.0), 25.0, 32.0))
-    assert detector.undecided == 3 and detector.alarms == 0
+    assert detector.undecided == 1 and detector.alarms == 0     # 25 -> 32 s is too far apart
     assert max(d2 for _, _, d2, _ in out if d2 is not None) < spoof_detector.CHI2_99
 
 
@@ -262,3 +272,23 @@ def test_after_a_long_gap_the_flow_follows_pairs_again_without_an_alarm(flight):
     later = [k for k in flight if k[0] / config.FPS in (30.0, 32.0, 34.0, 36.0, 38.0)]
     detector, out = run([k for k in flight if k[0] / config.FPS <= 10.0] + later)
     assert detector.undecided == 1 and detector.alarms == 0
+
+
+def after_a_slow_link(flight):
+    """Keyframes as they came after a 50 kbps limit was lifted: 6, 4, 4.5 and 3 s apart while the
+    budget grew back, then 2 Hz again."""
+    sparse = (14.0, 18.0, 22.5, 25.5)
+    return [k for k in flight
+            if k[0] / config.FPS <= 8.0 or k[0] / config.FPS in sparse or k[0] / config.FPS >= 26.0]
+
+
+def test_a_jump_while_keyframes_are_seconds_apart_raises_the_alarm(flight):
+    detector, out = run(after_a_slow_link(flight), lambda t: (50.0, 0.0) if t >= 17.0 else (0.0, 0.0))
+    first = next(t for t, alarm, _, _ in out if alarm)
+    assert first <= 26.5
+    assert detector.alarms == 1
+
+
+def test_keyframes_seconds_apart_raise_no_alarm_on_a_clean_flight(flight):
+    detector, out = run(after_a_slow_link(flight))
+    assert detector.alarms == 0
