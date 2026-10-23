@@ -79,7 +79,7 @@ proxy) unless noted.
 | `blackout`, 60 s | three 5 s blackouts: true position inside the drawn 95 % ellipse | 98.4 % of 3,949 blackout samples (95.3, 100 and 100 % per run) |
 | `spoof_drift`, 60 s | two 3 m/s GPS drifts per run | 6 of 6 detected after 1.2-1.8 s; no false alarm; position used during the alarm at most 1.8 m from the truth (mean 0.2 m) |
 | `spoof_jump`, 60 s | two 50 m GPS jumps per run | 6 of 6 detected after 1.2-1.8 s; no false alarm; at most 1.8 m from the truth (mean 0.1-0.3 m) |
-| `video_clean`, 25 s | the real clip with YOLO: bitrate, tracks, YOLO on the GPU | 1,853 vs. 25,972 kbps (7.1 %); tracks at 30 Hz, 281 patches per second; YOLO 11.6 ms per frame (median, 18.5 ms at the 95th percentile) in the live loop; no GPS alarm |
+| `video_clean`, 25 s | the real clip with YOLO: bitrate, tracks, YOLO on the GPU | 1,853 vs. 25,972 kbps (7.1 %); tracks at 30 Hz, 281 patches per second; YOLO 11.6 ms per frame (median, 18.5 ms at the 95th percentile) in the live loop |
 | `video_kbps50`, 25 s | the real clip at 50 kbps | track lists at 12 Hz (41 % of frames: with about 40 cars in view, one list every frame would need about 107 kbps), no patches; baseline 0 frames per second |
 
 The foveated stream's share is small on the synthetic world because few vehicles are in view;

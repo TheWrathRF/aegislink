@@ -172,7 +172,8 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
   degrees of the truth (a wrong sign in the heading or the wrong order of the chained transforms
   fails it); a blank frame is bridged with the motion before it; a clip written to disk is
   resized, played back and forth without a jump, starts at the origin heading north, and its
-  telemetry speed is the true speed within 5 %; a missing file is an error.
+  telemetry speed is the true speed within 5 %; a missing file and a first altitude at or below
+  0 m (or not finite) are errors.
 - `tests/test_yolo_detector.py`: letterboxing (scale, padding, RGB order, grey 114); output rows
   turned into upright boxes in frame pixels (a quarter turn swaps width and height, 45 degrees
   gives the square around it), unsure rows, other classes and empty slots dropped, boxes clipped
@@ -241,11 +242,13 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
   repeating a frame keeps the history; extreme altitudes and position jumps neither raise nor
   take over 10 ms. A GHOST moves its patch to the predicted position (a LIVE one does not); the
   ghost ellipse has the filter's size, its label sits above it and the path starts 4.5 m out;
-  no ghost is drawn without a view pose.
+  no ghost is drawn without a view pose. Fade masks are shared for car-sized patches, and 20
+  large patch sizes add nothing to that cache.
 - `tests/test_dashboard.py` (Qt offscreen; skipped where Qt cannot load): frame-time statistics;
   the window draws both views (patch, background and baseline pixels where expected) in under
   16.7 ms at the 95th percentile; `record` saves 9-11 numbered pictures of the window in 1 s,
-  the patch visible in them; a ghost drawn and counted while the link is silent; LINK
+  the patch visible in them, and a folder that cannot be written stops the recording with a
+  message instead of ending the window; a ghost drawn and counted while the link is silent; LINK
   LOST after a silence; GPS SPOOFED and the speeds while the alarm is on; the EW deck starts at
   the proxy's settings and sets loss, burst, rate, jitter, a blackout, a GPS drift, bearing and
   jump, and Clear on all three links of the real proxy; without a proxy it says so; bad replies (NaN, infinite, huge, missing stats keys)
@@ -275,7 +278,8 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
   used within 2 m of the truth, cleared after the GPS is right again). About 35 s. A scenario
   file's `video` must be a path. Where the GPU, the model and the clip are present, a short run
   over the real clip (8 s, the links cut to 50 kbps halfway): tracks arrive, nothing is scored,
-  and the UAV's report says YOLO ran on CUDA under 15 ms per frame (about 20 s more).
+  the baseline averages under 25 frames per second, and the UAV's report says YOLO ran on CUDA
+  under 15 ms per frame (about 20 s more).
 
 ## CI
 `.github/workflows/ci.yml` runs on every push: Windows (`msvc` preset) and Ubuntu (`gcc-asan`

@@ -503,7 +503,9 @@ would scale by more than 4 (or less than 1/4) is not drawn.
   side, which lies 8 px (the pad) from the box. The patch's border fades into the background over
   6 px, inside the pad, so the vehicle stays opaque. Patches of the same frame share one camera
   motion, and the fade masks are made once per patch size: with about 40 tracks on the real clip
-  that took the frame time from 17.7 to 14.4 ms at the 95th percentile.
+  that took the frame time from 17.7 to 14.4 ms at the 95th percentile. Only masks up to 256 x
+  256 pixels are kept (at most 256 of them), so patches in many large sizes cannot pile up
+  megabytes of masks.
 - Boxes are drawn green when matched in their frame, amber while coasting, with their ids.
 - **Ghost tracks** are drawn into the view through the view's camera pose (not drawn without
   one). A GHOST track's box and patch move, at their size, to where its filter predicts the
@@ -534,7 +536,9 @@ would scale by more than 4 (or less than 1/4) is not drawn.
   last keyframe pair, its `d2` and how many alarms there were.
 - `--record DIR` saves a picture of the whole window every 100 ms as `DIR/00000.jpg`,
   `00001.jpg`, ... (JPEG: a PNG of the window takes a few frames' time). Each picture is a grab
-  of the whole window on the drawing thread, so recording costs draw time.
+  of the whole window on the drawing thread, so recording costs draw time. A picture that
+  cannot be written (the folder is a file, the disk is full) stops the recording and shows why
+  in the status line; the window goes on.
 - In PyQt6 an exception that leaves a Qt slot ends the process, so the two timer slots catch
   everything and show it in the status line. Ctrl+C quits the event loop (a SIGINT handler), so
   the receiver stops and the frame times are still printed. The frame times of the last 10
@@ -558,9 +562,10 @@ would scale by more than 4 (or less than 1/4) is not drawn.
 [--log PATH] [--video CLIP] [--alt0 M] [--base-port P]`
 
 Starts `ew_chaos_proxy` with the three links, waits until it answers, then the ground station
-window and the UAV (`--send`, real time; with `--video` over the clip with YOLO, which first takes
-about 7 s to measure the clip's camera path). When the window closes it stops the UAV and the
-proxy.
+window and the UAV (`--send`, real time). With `--video` the UAV comes first: it measures the
+clip's camera path (about 7 s), and the window, with its `--seconds` and `--record`, opens only
+when the UAV prints that it is ready, so it never starts on an empty view. When the window
+closes it stops the UAV and the proxy.
 The ports are the defaults (5600-5605, control 5700) or the same layout from `--base-port`.
 
 ## Scenarios (`tools/run_scenario.py`, `tools/evaluate.py`, `scenarios/`)
@@ -595,10 +600,12 @@ The ports are the defaults (5600-5605, control 5700) or the same layout from `--
   and for 16 s), `spoof_jump` (a 50 m jump held for 15 s, twice) and `clean_10min` (no events,
   600 s: false alarms).
 - **Real clip**: `"video": "data/clip.mp4"` makes the UAV fly over that clip with YOLO
-  (`video_clean`, `video_kbps50`). The event clock then starts when the UAV says it has measured
-  the clip (its first output line), nothing is scored (a clip has no ground truth, so `tracks`
-  and `nav` are null), and `result.json` holds the UAV's own report under `uav`: frames, frame
-  rate and YOLO's time per frame (median and 95th percentile) with the provider it ran on.
+  (`video_clean`, `video_kbps50`). The UAV then starts first, and the headless station (which
+  gives up after 15 s without data) and the event clock start when the UAV prints its `clip:`
+  line (measuring a 105 s clip took longer than 15 s). Nothing is scored (a clip has no ground
+  truth, so `tracks` and `nav` are null), and `result.json` holds the UAV's own report under
+  `uav`: frames, frame rate and YOLO's time per frame (median and 95th percentile) with the
+  provider it ran on. `--alt0` must be above 0 m.
   `--seeds` is refused for a clip. In the live loop YOLO takes 11.6 ms per frame (median; 18.5
   ms at the 95th percentile), more than the 7.6 ms alone, as the encoders, the proxy and the
   station share the CPU.
