@@ -195,6 +195,8 @@ def test_a_short_video_scenario_end_to_end(tmp_path):
     result = run_scenario.run(scenario, tmp_path, free_port_block())
     summary, uav = result["summary"], result["uav"]
     assert summary["bad_messages"] == 0 and summary["tracks_hz"] > 5
+    # About half of the window at 50 kbps: the baseline averages well below its 30 per second.
+    assert summary["baseline_fps"] < 25
     assert result["tracks"] is None and result["nav"] is None
     assert uav["yolo_provider"] == "CUDAExecutionProvider" and uav["yolo_median_ms"] < 15
     assert uav["frames"] > 200
