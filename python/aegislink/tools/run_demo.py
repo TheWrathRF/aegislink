@@ -75,21 +75,36 @@ def main():
             gcs_args += ["--snapshot", str(args.snapshot)]
         if args.record is not None:
             gcs_args += ["--record", str(args.record)]
-        gcs = subprocess.Popen([sys.executable, "-m", "aegislink.gcs.main", *gcs_args])
-        processes.append(gcs)
+
+        def start_gcs():
+            gcs = subprocess.Popen([sys.executable, "-m", "aegislink.gcs.main", *gcs_args])
+            processes.append(gcs)
+            return gcs
+
+        if args.video is None:
+            gcs = start_gcs()
         uav_seconds = UAV_SECONDS if args.seconds is None else args.seconds + 10
         uav_args = [] if args.log is None else ["--log", str(args.log)]
         if args.video is not None:
             uav_args += ["--video", str(args.video)]
             if args.alt0 is not None:
                 uav_args += ["--alt0", str(args.alt0)]
-        processes.append(subprocess.Popen(
+        uav = subprocess.Popen(
             [sys.executable, "-m", "aegislink.uav.main", "--no-preview", "--send",
              "--seed", str(args.seed), "--seconds", str(uav_seconds),
              "--fovea-port", str(p["fovea_to_proxy"]),
              "--baseline-port", str(p["baseline_to_proxy"]),
              "--report-port", str(p["reports_to_uav"]), *uav_args],
-            stdout=subprocess.DEVNULL))
+            stdout=subprocess.DEVNULL if args.video is None else subprocess.PIPE, text=True)
+        processes.append(uav)
+        if args.video is not None:
+            # Measuring the clip takes seconds; the window (and its --seconds and --record)
+            # starts when the UAV says it is ready, so it does not open on an empty view.
+            for line in uav.stdout:
+                if line.startswith("clip:"):
+                    print(line.strip(), flush=True)
+                    break
+            gcs = start_gcs()
         gcs.wait()
         return_code = gcs.returncode
     except KeyboardInterrupt:

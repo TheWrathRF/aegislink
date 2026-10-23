@@ -75,17 +75,23 @@ def run(scenario, out_dir, base_port=config.FOVEA_TO_PROXY):
             stdout=subprocess.DEVNULL))
         with ProxyControl(p["proxy_control"]) as control:
             control.wait_ready()
-            gcs = subprocess.Popen(
-                [sys.executable, "-m", "aegislink.gcs.main", "--no-view", "--summary",
-                 "--seconds", str(scenario["seconds"]), "--warmup", str(scenario["warmup_s"]),
-                 "--motion-model", scenario.get("motion_model", "cv"),
-                 "--track-log", str(track_log),
-                 "--fovea-port", str(p["fovea_to_gcs"]),
-                 "--baseline-port", str(p["baseline_to_gcs"]),
-                 "--report-port", str(p["reports_to_proxy"])],
-                stdout=subprocess.PIPE, text=True)
-            processes.append(gcs)
+
+            def start_gcs():
+                gcs = subprocess.Popen(
+                    [sys.executable, "-m", "aegislink.gcs.main", "--no-view", "--summary",
+                     "--seconds", str(scenario["seconds"]), "--warmup", str(scenario["warmup_s"]),
+                     "--motion-model", scenario.get("motion_model", "cv"),
+                     "--track-log", str(track_log),
+                     "--fovea-port", str(p["fovea_to_gcs"]),
+                     "--baseline-port", str(p["baseline_to_gcs"]),
+                     "--report-port", str(p["reports_to_proxy"])],
+                    stdout=subprocess.PIPE, text=True)
+                processes.append(gcs)
+                return gcs
+
             video = ["--video", scenario["video"]] if "video" in scenario else []
+            if not video:
+                gcs = start_gcs()
             uav = subprocess.Popen(
                 [sys.executable, "-m", "aegislink.uav.main", "--no-preview", "--send",
                  "--seed", str(scenario["seed"]), "--seconds", str(uav_seconds),
@@ -95,9 +101,13 @@ def run(scenario, out_dir, base_port=config.FOVEA_TO_PROXY):
                 stdout=subprocess.PIPE if video else subprocess.DEVNULL, text=True)
             processes.append(uav)
             if video:
-                # The UAV first measures the clip's camera path (seconds); the clock starts
-                # when it says it is ready.
-                uav.stdout.readline()
+                # The UAV first measures the clip's camera path, which takes seconds (about 7 s
+                # for 26 s of clip), and the station gives up when nothing arrives for 15 s: it
+                # starts, and the clock with it, once the UAV says it is ready.
+                for line in uav.stdout:
+                    if line.startswith("clip:"):
+                        break
+                gcs = start_gcs()
             started = time.monotonic()
             for event in scenario["events"]:
                 time.sleep(max(0.0, started + event["at_s"] - time.monotonic()))
