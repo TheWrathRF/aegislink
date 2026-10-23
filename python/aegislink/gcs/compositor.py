@@ -28,6 +28,7 @@ W, H = config.FRAME_WIDTH, config.FRAME_HEIGHT
 # The patch's border fades into the background over this many pixels. The crop is padded by
 # PATCH_PAD (8) around the box, so the vehicle itself stays opaque.
 FEATHER_PX = 6
+MAX_CACHED_FEATHER_PX = 256 * 256
 GREEN, AMBER = (0, 255, 0), (0, 200, 255)
 LIVE_COLOR, GHOST_COLOR = (255, 210, 90), (255, 80, 255)
 # A track's path starts this far from its centre, so that it never covers the vehicle (half a
@@ -141,9 +142,20 @@ def track_boxes(view, scale):
     return result
 
 
-# Patches come in a few sizes, so their masks are made once (read-only, shared).
-@functools.lru_cache(maxsize=256)
 def _feather(width, height):
+    # Car-sized patches come in a few sizes, so their masks are made once (read-only, shared).
+    # Large ones are not kept: patches in many large sizes would fill the cache with megabytes.
+    if width * height <= MAX_CACHED_FEATHER_PX:
+        return _small_feather(width, height)
+    return _make_feather(width, height)
+
+
+@functools.lru_cache(maxsize=256)
+def _small_feather(width, height):
+    return _make_feather(width, height)
+
+
+def _make_feather(width, height):
     x = np.arange(width)
     y = np.arange(height)
     edge = np.minimum.outer(np.minimum(y, y[::-1]), np.minimum(x, x[::-1]))

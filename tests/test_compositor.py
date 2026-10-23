@@ -259,3 +259,16 @@ def test_ghosts_are_not_drawn_without_a_view_pose():
     view = View(None, None, [], None, {}, PoseHistory())
     view.ghosts = [estimate(1, "GHOST", (0.0, 0.0), np.eye(2))]
     assert compositor.render_fovea(view, (320, 180)).max() == 0
+
+
+def test_fade_masks_are_kept_only_for_car_sized_patches():
+    small = compositor._feather(60, 40)
+    assert compositor._feather(60, 40) is small     # made once, shared
+    assert not small.flags.writeable
+    # A forged stream of large patches in ever new sizes must not pile up masks: each 1000 x 700
+    # mask is 2.8 MB.
+    before = compositor._small_feather.cache_info().currsize
+    for i in range(20):
+        large = compositor._feather(1000 - i, 700)
+        assert large.shape == (700, 1000 - i) and large[350, 500 - i // 2] == 1.0
+    assert compositor._small_feather.cache_info().currsize == before
