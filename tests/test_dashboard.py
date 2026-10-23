@@ -129,6 +129,21 @@ def test_window_records_itself_ten_times_a_second(app, station, tmp_path):
     assert red.sum() > 100
 
 
+def test_a_recording_that_cannot_be_saved_is_shown_not_fatal(app, station, tmp_path):
+    taken = tmp_path / "a_file"
+    taken.write_text("")    # --record names a file, not a folder
+    window = Dashboard(ReceiverThread(station), record=taken)
+    window.show()
+    window.start()
+    window.save_picture()   # must not raise: an exception leaving a Qt slot ends the process
+    assert window.error is not None and not window.record_timer.isActive()
+    window.draw_frame()
+    window.update_status()
+    window.update_status()
+    assert "recording stopped" in window.status.text()
+    window.close()
+
+
 def test_a_ghost_is_drawn_and_counted_while_the_link_is_silent(app, station):
     fill(station, now_s=time.monotonic() - 1.0)
     window = Dashboard(ReceiverThread(station))

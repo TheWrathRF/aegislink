@@ -231,11 +231,18 @@ class Dashboard(QMainWindow):
         self.record_timer.timeout.connect(self.save_picture)
 
     def save_picture(self):
-        if self.recorded == 0:
-            self.record.mkdir(parents=True, exist_ok=True)
-        # JPEG: saving a PNG of the window takes a few frames' time.
-        self.grab().save(str(self.record / f"{self.recorded:05d}.jpg"), quality=90)
-        self.recorded += 1
+        # A timer slot like draw_frame: an exception leaving it would end the process.
+        try:
+            if self.recorded == 0:
+                self.record.mkdir(parents=True, exist_ok=True)
+            path = self.record / f"{self.recorded:05d}.jpg"
+            # JPEG: saving a PNG of the window takes a few frames' time.
+            if not self.grab().save(str(path), quality=90):
+                raise OSError(f"cannot write {path}")
+            self.recorded += 1
+        except Exception as e:
+            self.record_timer.stop()
+            self.error = OSError(f"recording stopped: {e}")
 
     def closeEvent(self, event):
         self.record_timer.stop()
