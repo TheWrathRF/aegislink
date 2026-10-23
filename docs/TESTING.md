@@ -168,7 +168,8 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
 - `tests/test_uav_run.py`: a 40 s run writes a log with the expected header and fields, whose
   pose, positions and boxes agree within 1 px, and whose `traffic` holds every vehicle; tracks cover over 90 % of the vehicles in clear
   view with at most 1 id switch and under 1 % false track frames; the score counts switches,
-  reacquisitions and false tracks; a seed repeats a run exactly. About 10 s.
+  reacquisitions and false tracks; a seed repeats a run exactly; a paced 3 s run reports 3.0 s
+  (within 0.2), without the time it took to build the world. About 15 s.
 - `tests/test_video.py`: 4 s of the simulated flight (a turn and a climb), rendered and
   registered frame to frame: the measured path stays within 0.5 m, 0.5 m of altitude and 0.5
   degrees of the truth (a wrong sign in the heading or the wrong order of the chained transforms

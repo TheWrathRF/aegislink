@@ -234,13 +234,15 @@ def draw_overlay(r):
 
 def run(seconds=60.0, seed=1, preview=True, log_path=None, streamer=None, sim=None):
     """Runs the loop for `seconds` of simulated time and returns the TrackScore. The preview and
-    the streamer pace it to real time. `sim` replaces the synthetic world (a VideoUav); it has no
-    ground truth, so then nothing is logged or scored and None is returned."""
+    the streamer pace it to real time. `sim` is the UavSim to run (built from `seed` if None) or
+    a VideoUav, which has no ground truth: then nothing is logged or scored and None is
+    returned."""
     log = score = None
     if sim is None:
+        sim = UavSim(seed=seed)
+    if isinstance(sim, UavSim):
         if log_path is None:
             log_path = Path("logs") / f"ground_truth_{time.strftime('%Y%m%d_%H%M%S')}.jsonl"
-        sim = UavSim(seed=seed)
         log = GroundTruthLog(log_path, sim)
         score = TrackScore()
     next_time = time.perf_counter()
@@ -290,7 +292,9 @@ def main():
     args = parser.parse_args()
     if args.video and not (math.isfinite(args.alt0) and args.alt0 > 0):
         parser.error("--alt0 must be above 0 m")
-    sim = None
+    # Built before the clock starts (the world takes over a second), so the time and the sent
+    # kbps printed at the end are the run's own.
+    sim = None if args.video else UavSim(seed=args.seed)
     if args.video:
         # Imported here: onnxruntime is only needed with --video.
         from aegislink.uav.yolo_detector import YoloDetector

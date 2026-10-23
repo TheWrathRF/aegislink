@@ -103,3 +103,21 @@ def test_same_seed_same_run():
         ra, rb = a.step(), b.step()
     assert np.array_equal(ra.frame, rb.frame)
     assert [t.box.tolist() for t in ra.tracks] == [t.box.tolist() for t in rb.tracks]
+
+
+def test_a_paced_run_reports_its_own_time(tmp_path):
+    """The run's seconds and sent kbps leave out building the world (over a second)."""
+    import re
+    import subprocess
+    import sys
+
+    from test_proxy import free_ports
+
+    fovea, baseline, reports = free_ports(3)
+    out = subprocess.run(
+        [sys.executable, "-m", "aegislink.uav.main", "--no-preview", "--send", "--seconds", "3",
+         "--log", str(tmp_path / "gt.jsonl"), "--fovea-port", str(fovea),
+         "--baseline-port", str(baseline), "--report-port", str(reports)],
+        capture_output=True, text=True, timeout=60, check=True).stdout
+    seconds = float(re.search(r"ran ([\d.]+) s", out).group(1))
+    assert abs(seconds - 3.0) <= 0.2
