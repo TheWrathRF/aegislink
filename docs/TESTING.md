@@ -191,7 +191,8 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
 - `tests/test_net.py`: counters, highest seq, bad datagrams, minimum delay per report interval
   (also negative), loss as seq gaps, a 4 s reassembly timeout, delay only from chosen types and
   `NO_DELAY` without a sample, a u64 timestamp that still encodes, the rate meter (bounded
-  without reads).
+  without reads); packets claiming 65,535 fragments counted as bad and no slower than normal
+  ones, a message of 512 fragments still delivered and one of 513 refused.
 - `tests/test_scheduler.py`: never more than the budget over 0.1-2 s windows (and over 95 % of
   it used); telemetry and tracks every frame at 50 kbps; a keyframe paced and whole at 50 kbps;
   no seq gaps; whole frames skipped below the control rate; 10 Hz patches and 2 Hz keyframes at a

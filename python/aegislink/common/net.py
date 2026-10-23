@@ -6,6 +6,11 @@ from aegislink._core import ParseError, Reassembler, parse_packet
 from aegislink.common.messages import NO_DELAY, ReceiverReport
 
 _MAX_DELAY_US = 2**63 - 1   # the header timestamp is any u64, the report's delay an i64
+# The most fragments a message may have. The largest real ones (measured on the real clip) are
+# a keyframe of 9 KB (46 fragments in the UAV's smallest chunks of 200 B) and a baseline frame
+# of 101 KB (85 fragments of 1200 B). A forged header claiming up to 65,535 fragments would make
+# the reassembler set aside a slot for each.
+MAX_FRAGMENTS = 512
 
 
 class LinkReceiver:
@@ -18,9 +23,10 @@ class LinkReceiver:
     capture time, so its late fragments would look like queueing.
     """
 
-    def __init__(self, timeout_us=200_000, delay_types=None):
+    def __init__(self, timeout_us=200_000, delay_types=None, max_fragments=MAX_FRAGMENTS):
         self.reassembler = Reassembler(timeout_us=timeout_us)
         self.delay_types = delay_types
+        self.max_fragments = max_fragments
         self.received = 0
         self.received_bytes = 0
         self.bad = 0
@@ -30,7 +36,7 @@ class LinkReceiver:
     def push(self, datagram, now_us):
         """Returns the completed Message, or None."""
         packet = parse_packet(datagram)
-        if packet.error != ParseError.OK:
+        if packet.error != ParseError.OK or packet.header.frag_count > self.max_fragments:
             self.bad += 1
             return None
         header = packet.header

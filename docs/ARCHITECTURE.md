@@ -364,6 +364,10 @@ on Windows a send to a closed port makes the next receive on the same socket fai
   each. The foveated link's reassembler waits 4 s (a paced keyframe takes about 3 s at 50
   kbps), the baseline's 200 ms. Only telemetry and tracks count for the delay: they are sent the
   moment they are captured, while a paced image keeps its capture time.
+- A packet claiming more than 512 fragments is counted as bad before it reaches the reassembler,
+  which would otherwise set aside a slot for each of up to 65,535 (about 100 times the cost of
+  a normal packet). The largest real messages are a keyframe of 9 KB (46 fragments in the UAV's
+  smallest chunks of 200 B) and a baseline frame of 101 KB (85 of 1200 B), both on the real clip.
 - It keeps the newest of everything by frame number (older arrivals are ignored and not
   counted): telemetry, the track list, the keyframe and one patch per track of the newest list.
   Telemetry of the held frame is ignored as well: the UAV sends one per frame, and a copy put on

@@ -1,8 +1,8 @@
 """LinkReceiver: parsing, reassembly and the counters behind the receiver reports."""
 
-from aegislink._core import MsgType, Packetizer
+from aegislink._core import MAX_PAYLOAD, MsgType, Packetizer
 from aegislink.common.messages import NO_DELAY
-from aegislink.common.net import LinkReceiver, RateMeter
+from aegislink.common.net import MAX_FRAGMENTS, LinkReceiver, RateMeter
 
 
 def test_counts_packets_bytes_and_highest_seq():
@@ -105,3 +105,39 @@ def test_an_interval_without_a_delay_sample_says_so():
     assert report.received == 1 and report.min_delay_us == NO_DELAY
     rx.push(Packetizer(5).packetize(MsgType.TELEMETRY, 300_000, b"t")[0], 300_000)
     assert rx.report(400_000).min_delay_us == 0     # a real delay of 0 is a sample
+
+
+def test_a_forged_fragment_count_is_bad_and_costs_no_more_than_a_normal_packet():
+    import time
+
+    from aegislink._core import Header, encode_packet
+
+    def push_all(frag_count, n=2000):
+        rx = LinkReceiver(timeout_us=4_000_000)
+        packets = [encode_packet(Header(MsgType.ROI_PATCH, i, 0, i, 0, frag_count), b"x" * 10)
+                   for i in range(n)]
+        start = time.perf_counter()
+        for i, p in enumerate(packets):
+            rx.push(p, 1000 + i)
+        return rx, (time.perf_counter() - start) / n
+
+    # Each would make the reassembler set aside 65,535 fragment slots (about 100 times the cost
+    # of a normal packet, which then evicts a real partial message).
+    forged, forged_s = push_all(65535)
+    assert forged.bad == 2000 and forged.received == 0 and forged.reassembler.pending == 0
+    normal, normal_s = push_all(2)
+    assert normal.bad == 0 and normal.reassembler.pending == 64
+    assert forged_s < 3 * normal_s
+
+
+def test_the_largest_allowed_message_still_arrives():
+    big = bytes(range(256)) * (MAX_FRAGMENTS * MAX_PAYLOAD // 256)
+    rx = LinkReceiver()
+    message = None
+    for datagram in Packetizer().packetize(MsgType.FULL_FRAME, 0, big):
+        message = rx.push(datagram, 0) or message
+    assert message is not None and bytes(message.data) == big and rx.bad == 0
+    rx = LinkReceiver()
+    for datagram in Packetizer().packetize(MsgType.FULL_FRAME, 0, big + b"x"):
+        assert rx.push(datagram, 0) is None
+    assert rx.bad == MAX_FRAGMENTS + 1
