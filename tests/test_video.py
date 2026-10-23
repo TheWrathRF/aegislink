@@ -103,3 +103,11 @@ def test_clip_telemetry_matches_its_path(clip_file, flight_frames):
 def test_missing_clip_is_an_error(tmp_path):
     with pytest.raises(FileNotFoundError):
         VideoClip(tmp_path / "missing.mp4", NadirCamera(), alt0_m=50)
+
+
+@pytest.mark.parametrize("alt0", [0.0, -55.0, float("nan"), float("inf")])
+def test_an_impossible_first_altitude_is_an_error(clip_file, alt0):
+    # A negative altitude would turn the whole path by 180 degrees without a word, and 0 makes
+    # the ground station drop every message.
+    with pytest.raises(ValueError):
+        VideoClip(clip_file, NadirCamera(), alt0_m=alt0)

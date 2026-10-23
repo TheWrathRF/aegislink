@@ -13,6 +13,7 @@ aegislink.common.config).
 
 import argparse
 import json
+import math
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -287,6 +288,8 @@ def main():
                         help="altitude in metres at the clip's first frame")
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL, help="YOLO ONNX model")
     args = parser.parse_args()
+    if args.video and not (math.isfinite(args.alt0) and args.alt0 > 0):
+        parser.error("--alt0 must be above 0 m")
     sim = None
     if args.video:
         # Imported here: onnxruntime is only needed with --video.
@@ -322,8 +325,9 @@ def main():
         print(json.dumps({"seconds": round(elapsed, 1), "frames": sim.index,
                           "fps": round(sim.index / elapsed, 1),
                           "yolo_provider": sim.detector.provider,
-                          "yolo_median_ms": round(float(np.median(ms)), 2),
-                          "yolo_p95_ms": round(float(np.percentile(ms, 95)), 2)}))
+                          "yolo_median_ms": round(float(np.median(ms)), 2) if len(ms) else None,
+                          "yolo_p95_ms": round(float(np.percentile(ms, 95)), 2) if len(ms)
+                          else None}))
     if streamer:
         sent = streamer.scheduler.sent
         print(f"sent: foveated {streamer.sent_bytes['fovea'] * 8 / elapsed / 1000:.1f} kbps "

@@ -91,6 +91,8 @@ class VideoClip:
         path = Path(path)
         if not path.is_file():
             raise FileNotFoundError(path)
+        if not (math.isfinite(alt0_m) and alt0_m > 0):
+            raise ValueError(f"the first altitude must be above 0 m, not {alt0_m}")
         capture = cv2.VideoCapture(str(path))
         self.fps = capture.get(cv2.CAP_PROP_FPS) or FPS
         self.origin_latlon = origin_latlon
