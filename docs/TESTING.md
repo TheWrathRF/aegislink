@@ -243,7 +243,7 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
   and a crop cut at the image edge keeps its uncut side on the box; boxes from an older frame move
   with the camera. These fail without the warp, the edge rule or the feathering. Telemetry
   repeating a frame keeps the history; extreme altitudes and position jumps neither raise nor
-  take over 10 ms. A GHOST moves its patch to the predicted position (a LIVE one does not); the
+  take over 10 ms (after one normal render, which pays for OpenCV's set-up). A GHOST moves its patch to the predicted position (a LIVE one does not); the
   ghost ellipse has the filter's size, its label sits above it and the path starts 4.5 m out;
   no ghost is drawn without a view pose. Fade masks are shared for car-sized patches, and 20
   large patch sizes add nothing to that cache.
@@ -258,18 +258,23 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
   and datagrams from another address change nothing; an exception while drawing is shown, not
   fatal; the kept frame times are bounded; Ctrl+C closes the window cleanly (a subprocess that
   raises SIGINT exits 0 and prints its frame times). A live run (UAV process, proxy, this window, about
-  20 s): on a clean link both streams arrive, then the deck's rate slider at 50 kbps stops the
-  baseline while the tracks of at least 97 % of the UAV's frames keep arriving (counted by frame
-  number: under the load of the whole test run the UAV itself makes fewer than 30 frames a
-  second), and neither they nor the draw loop stall (20 track lists and 30 frames per second or
-  more: with the UAV and the proxy on the same machine the rates depend on the machine).
+  20 s): on a clean link the tracks and baseline frames of at least 97 % of the UAV's frames
+  arrive, then the deck's rate slider at 50 kbps stops the baseline while the tracks keep
+  arriving just as completely. Frames are counted by number: under the load of the whole test
+  run the UAV itself makes fewer than 30 frames a second. Neither the streams nor the draw loop
+  may stall (15 track lists and 30 drawn frames per second or more: with the UAV and the proxy
+  on the same machine the rates depend on the machine).
 - `tests/test_demo.py`: `run_demo` for 8 s (window offscreen) exits cleanly, draws over 300
-  frames, receives tracks and baseline frames, and saves its snapshot. About 10 s.
+  frames, receives the tracks and baseline frames of at least 97 % of the UAV's frames (counted
+  by number over the whole run, with 15 per second or more), reports no error, and saves its
+  snapshot; with the UAV's report port taken, the UAV stops and `run_demo` exits with an error.
+  A test that runs out of time kills the whole process tree, the proxy included. About 15 s.
 - `tests/test_stream.py`: the UAV, the proxy and the GCS as three processes, measured by the
   GCS over 8 s after a 5 s warm-up. Clean link: the foveated stream is at most 10 % of the
-  baseline and 99 % of frames' telemetry and tracks arrive. Both links at 50 kbps: the foveated
-  stream stays under the limit, 99 % of frames' tracks arrive (at least 29.5 per second), and no
-  baseline frame gets through. About 30 s.
+  baseline and 99 % of frames' telemetry, tracks and baseline frames arrive. Both links at 50
+  kbps: the foveated stream stays under the limit, 99 % of frames' tracks arrive, and no
+  baseline frame gets through. The rates must only stay above 15 per second (the UAV's own
+  frame rate depends on the machine). About 30 s.
 - `tests/test_scenario.py`: the ground truth interpolated between frames and moved between
   origins; blackout and link-up samples scored apart, by TSLF, with unmatched tracks counted;
   scenario files checked and completed, the shipped ones load; pooled shares weighted by
