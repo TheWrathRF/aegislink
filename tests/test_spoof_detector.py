@@ -292,3 +292,32 @@ def test_a_jump_while_keyframes_are_seconds_apart_raises_the_alarm(flight):
 def test_keyframes_seconds_apart_raise_no_alarm_on_a_clean_flight(flight):
     detector, out = run(after_a_slow_link(flight))
     assert detector.alarms == 0
+
+
+def like_the_live_run(flight):
+    """Keyframes 5, 5.5, 4 and 4 s apart, as measured live after a 50 kbps limit was lifted."""
+    sparse = (13.0, 18.5, 22.5, 26.5)
+    return [k for k in flight
+            if k[0] / config.FPS <= 8.0 or k[0] / config.FPS in sparse or k[0] / config.FPS >= 27.0]
+
+
+def test_a_jump_inside_a_pair_over_5_s_apart_raises_the_alarm(flight):
+    # The jump at 16 s lies inside the 13.0 -> 18.5 s pair; at most 5 s apart it would not be
+    # compared, and the chain's coast would hide the jump.
+    detector, out = run(like_the_live_run(flight), lambda t: (50.0, 0.0) if t >= 16.0 else (0.0, 0.0))
+    first = next(t for t, alarm, _, _ in out if alarm)
+    assert first <= 27.0
+    assert detector.alarms == 1
+
+
+def test_keyframes_like_the_live_run_raise_no_alarm_on_a_clean_flight(flight):
+    detector, _ = run(like_the_live_run(flight))
+    assert detector.alarms == 0
+
+
+def test_a_pair_whose_gps_guess_holds_a_jump_is_retried_with_the_flow_velocity(flight):
+    # 1.0 -> 8.0 s is too far apart and holds a 100 m jump, so the GPS velocity over it is
+    # about 14 m/s off; the 8.0 -> 12.0 s pair is followed with the flow velocity instead.
+    keyframes = [k for k in flight if k[0] / config.FPS in (0.0, 0.5, 1.0, 8.0, 12.0)]
+    detector, _ = run(keyframes, lambda t: (100.0, 0.0) if t >= 5.0 else (0.0, 0.0))
+    assert detector.undecided == 1

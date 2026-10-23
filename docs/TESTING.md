@@ -238,8 +238,10 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
   a 50 m jump inside a 4 s gap between keyframes raises the alarm at the third keyframe after
   it (also at the station), a 100 m jump inside a 6.5 s gap (too far apart to compare) once the
   coasted chain sees it, and a 50 m jump while keyframes come 3-6 s apart (as after a rate limit
-  is lifted) through the check of the pair alone; the same keyframe spacing and three gaps of
-  4-7 s on the clean flight raise none; after 20 s without keyframes, pairs 2 s apart are
+  is lifted) through the check of the pair alone, and one inside a pair 5.5 s apart (compared
+  up to 6 s); a pair after one that held a 100 m jump, whose GPS-velocity guess is then far off,
+  is still followed by retrying with the flow velocity;
+  the same keyframe spacings and three gaps of 4-7 s on the clean flight raise none; after 20 s without keyframes, pairs 2 s apart are
   followed again (with the GPS velocity as the search guess) and raise no alarm.
   The station: with the GPS 50 m off, every position the view uses comes from the flow, the
   stats and the track log show the alarm, it uses the GPS again once it agrees, and one forged

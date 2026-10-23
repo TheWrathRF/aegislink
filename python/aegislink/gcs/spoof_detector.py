@@ -38,7 +38,7 @@ KEYFRAME_CAMERA = NadirCamera(*KEYFRAME_SIZE)
 CHI2_99 = 9.21
 ALARM_AFTER = 3
 CLEAR_AFTER = 5
-MAX_PAIR_S = 5.0
+MAX_PAIR_S = 6.0
 MAX_CORNERS = 200
 MIN_INLIERS = 30
 # Points that moved this far from the median are on moving vehicles (or tracked wrongly).
@@ -189,15 +189,22 @@ class SpoofDetector:
         # The guess only places the search windows: without one, a pair a few seconds apart is
         # too far for the flow to find. A wrong one makes the pair undecided, never an alarm.
         # After a pair the flow could not follow, its last velocity may be long out of date, and
-        # the GPS's over that pair is the better guess.
-        recent = self.velocity if self.followed else None
-        expected = recent or self.gps_velocity or self.velocity or (0.0, 0.0)
+        # the GPS's over that pair is the better guess, unless that pair held a jump: so a pair
+        # that fails with one guess is tried again with the other.
+        if self.followed:
+            guesses = [self.velocity, self.gps_velocity]
+        else:
+            guesses = [self.gps_velocity, self.velocity]
+        guesses = list(dict.fromkeys(g for g in guesses if g is not None)) or [(0.0, 0.0)]
         self.gps_velocity = tuple((gps - old.gps) / dt)
         flow = None
         if dt <= MAX_PAIR_S:
-            flow = flow_displacement(old.image, old.attitude, image, new.attitude,
-                                     tuple(np.array(expected) * dt),
-                                     FLOW_FLOOR_M * max(1.0, dt / FLOOR_PAIR_S))
+            for guess in guesses:
+                flow = flow_displacement(old.image, old.attitude, image, new.attitude,
+                                         tuple(np.array(guess) * dt),
+                                         FLOW_FLOOR_M * max(1.0, dt / FLOOR_PAIR_S))
+                if flow is not None:
+                    break
         self.followed = flow is not None
         if flow is None:
             self.undecided += 1

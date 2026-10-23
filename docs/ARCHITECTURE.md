@@ -477,8 +477,10 @@ camera really moved. The check compares the two at every new keyframe.
 - The search windows start where an expected displacement puts the points: the last flow
   velocity times the time between the keyframes, or the GPS velocity of the previous pair if
   the flow has none yet or could not follow the previous pair (after a long gap the old flow
-  velocity can be far off, and the pairs after it would fail too). A pair a few seconds apart is
-  otherwise too far for the flow to find; a wrong guess only makes the pair fail.
+  velocity can be far off, and the pairs after it would fail too). A pair that fails with one
+  guess is tried once more with the other: the GPS velocity is wrong over a pair that held a
+  jump. A pair a few seconds apart is otherwise too far for the flow to find; a wrong guess
+  only makes the pair fail.
 - **The chain**: the flow displacements are added up from the last keyframe whose GPS was
   trusted. At each keyframe the GPS position minus the chain's position is the residual `r`,
   and `d2 = r^T S^-1 r`, with `S` the chain's summed covariance plus (0.05 m)^2 per axis for the
@@ -497,7 +499,7 @@ camera really moved. The check compares the two at every new keyframe.
   never tied to the GPS, and `fallback` is a `FlowPath`: the chain's position at each keyframe
   since the last trusted one, a straight line in between, and after the newest one the last
   flow velocity. 5 keyframes in a row that agree with the GPS again clear it.
-- A pair the flow cannot follow, or more than 5 s apart, decides nothing: the chain is carried
+- A pair the flow cannot follow, or more than 6 s apart, decides nothing: the chain is carried
   on with the last flow velocity, its uncertainty growing by 3 m/s per second, and the next
   pair the flow follows is compared against it. It is not tied to the GPS there: a jump made
   while keyframes were sparse would become the reference, and every later pair would agree
@@ -506,13 +508,12 @@ camera really moved. The check compares the two at every new keyframe.
   again) starts everything again.
 - It only works where keyframes arrive: on a slow link they come seconds apart (the 15 % budget
   share), and a total blackout brings none. A jump made within a pair the flow follows (up to
-  5 s apart) is found by the pair check. One made within a longer gap is found only if it
-  stands out from the coasted uncertainty (3 m per second of gap, one sigma per axis). After a
-  rate limit is lifted, keyframes stay seconds apart while the budget grows back: a jump can
-  then fall into a pair too long to compare, the GPS velocity over that pair (which holds the
-  jump) misplaces the search windows of the next pair so that it fails too, and by the first
-  pair the flow follows again the coasted uncertainty can exceed the jump, which is then
-  accepted. A drift slow
+  6 s apart) is found by the pair check, also after a rate limit is lifted while keyframes still
+  come seconds apart; the alarm then takes as long as three such keyframes. One made within a
+  longer gap is found only if it stands out from the coasted uncertainty (3 m per second of
+  gap, one sigma per axis). At 50 kbps itself a keyframe of about 5 KB takes over 5 s at its
+  15 % share, so keyframes can come more than 6 s apart, and a jump that falls into such a pair
+  is accepted. A drift slow
   enough that each pair's residual stays under the threshold is not caught, because the chain
   is tied to the GPS at every keyframe that agrees.
 
