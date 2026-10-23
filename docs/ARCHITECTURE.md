@@ -594,7 +594,8 @@ The ports are the defaults (5600-5605, control 5700) or the same layout from `--
 - `run_scenario` starts the proxy, the ground station (headless, `--summary`, `--track-log`) and
   the UAV (`--send`, with its ground-truth log), plays the events through the control port, and
   waits for both nodes to end by themselves (the UAV flies 3 s longer than the station measures,
-  so both logs are complete). The logs and `result.json` (scenario, the station's summary, the
+  so both logs are complete; it may need much longer on a busy machine, where it makes fewer than
+  30 frames a second, and gets its whole flight time again plus 30 s). The logs and `result.json` (scenario, the station's summary, the
   track score) go to `logs/scenarios/<name>_<date>_<time>/`. With `--seeds` it runs once per seed,
   each in `seed_<n>/`, and pools the blackout samples of all runs.
 - `evaluate` matches each track to the true vehicle nearest (within 3 m) to its filtered

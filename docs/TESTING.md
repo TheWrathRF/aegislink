@@ -281,7 +281,8 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
 - `tests/test_scenario.py`: the ground truth interpolated between frames and moved between
   origins; blackout and link-up samples scored apart, by TSLF, with unmatched tracks counted;
   scenario files checked and completed, the shipped ones load; pooled shares weighted by
-  samples. The GPS check's score: detection timed from the moment the GPS went wrong, a false
+  samples; with fake processes, a UAV at 27 frames per second still finishes the 10-minute
+  scenario instead of being killed. The GPS check's score: detection timed from the moment the GPS went wrong, a false
   alarm, the clear time and the error of the position used; a spoof without an alarm is
   missed; pooled over runs. Two short scenarios end to end (UAV, proxy, headless station): a
   3 s blackout (the silence is found, the tracks are scored with loose bounds, `result.json` is

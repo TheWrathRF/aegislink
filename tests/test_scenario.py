@@ -216,3 +216,55 @@ def test_a_short_gps_jump_scenario_end_to_end(tmp_path):
     assert nav["detection_s"][0] <= 3.0
     assert nav["flow_error_m"]["max"] < 2.0
     assert len(nav["clear_s"]) == 1 and result["summary"]["gps_alarms"] == 1
+
+
+def test_a_slow_uav_gets_the_time_to_finish_a_long_run(tmp_path, monkeypatch):
+    """The UAV flies a fixed number of frames. At 27 frames per second (a busy machine) the
+    10-minute scenario's flight ends about 70 s after the station stopped; the run must wait for
+    it, or the UAV is killed and its log is cut."""
+    import subprocess
+    from pathlib import Path
+
+    scenario = run_scenario.load(
+        Path(__file__).resolve().parent.parent / "scenarios" / "clean_10min.json")
+    flight_s = (scenario["warmup_s"] + scenario["seconds"] + 3) * 30 / 27
+
+    class FakeProcess:
+        def __init__(self, args, **kwargs):
+            self.uav = "aegislink.uav.main" in args
+            self.gcs = "aegislink.gcs.main" in args
+
+        def communicate(self, timeout=None):
+            if self.uav and timeout < flight_s - scenario["warmup_s"] - scenario["seconds"]:
+                raise subprocess.TimeoutExpired("uav", timeout)
+            return ('{"telemetry_hz": 27}\n' if self.gcs else ""), None
+
+        def poll(self):
+            return 0
+
+    class FakeControl:
+        def __init__(self, port):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            pass
+
+        def wait_ready(self):
+            pass
+
+        def configure(self, link, **settings):
+            pass
+
+    monkeypatch.setattr(run_scenario, "find_proxy", lambda: "ew_chaos_proxy")
+    monkeypatch.setattr(run_scenario.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(run_scenario, "ProxyControl", FakeControl)
+    monkeypatch.setattr(run_scenario.time, "sleep", lambda s: None)
+    monkeypatch.setattr(evaluate.Truth, "read", lambda path: None)
+    monkeypatch.setattr(evaluate, "read_jsonl", lambda path: [])
+    monkeypatch.setattr(evaluate, "ghost_consistency", lambda truth, samples: {})
+    monkeypatch.setattr(evaluate, "spoof_detection", lambda truth, samples: {})
+    result = run_scenario.run(scenario, tmp_path)
+    assert result["summary"] == {"telemetry_hz": 27}

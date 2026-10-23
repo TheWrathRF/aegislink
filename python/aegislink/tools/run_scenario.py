@@ -114,7 +114,9 @@ def run(scenario, out_dir, base_port=config.FOVEA_TO_PROXY):
                 for link in event.get("links", ALL_LINKS):
                     control.configure(link, **event["set"])
         summary_text, _ = gcs.communicate(timeout=uav_seconds + 30)
-        uav_text, _ = uav.communicate(timeout=60)
+        # The UAV flies a fixed number of frames, and on a busy machine it makes fewer than 30
+        # a second: a long run can end minutes after the station stopped.
+        uav_text, _ = uav.communicate(timeout=uav_seconds + 30)
     finally:
         for process in reversed(processes):
             if process.poll() is None:
