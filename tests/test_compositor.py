@@ -189,14 +189,22 @@ def test_telemetry_repeating_a_frame_keeps_the_history():
 @pytest.mark.parametrize("alt, jump", [(0.01, 1e6), (1e-6, 10.0), (3e38, 0.0), (0.0, 0.0)])
 def test_extreme_poses_do_not_break_or_slow_the_view(alt, jump):
     import time
-    poses = history(telemetry(4, 0.0, 0.0), telemetry(5, jump, 0.0, alt=alt))
-    image = colour_patch(56, 36)
-    view = View(
-        telemetry=telemetry(5, jump, 0.0, alt=alt), tracks_frame=4,
-        tracks=[messages.TrackBox(3, (600, 300, 640, 320), True)],
-        keyframe=Keyframe(messages.KeyframeMsg(4, 150.0, 0.0, b""), marked_keyframe((10, 10))),
-        patches={3: Patch(messages.PatchMsg(4, 150.0, 0.0, 3, (592, 292, 648, 328), b""), image)},
-        poses=poses)
+
+    def view_at(alt, jump):
+        poses = history(telemetry(4, 0.0, 0.0), telemetry(5, jump, 0.0, alt=alt))
+        image = colour_patch(56, 36)
+        return View(
+            telemetry=telemetry(5, jump, 0.0, alt=alt), tracks_frame=4,
+            tracks=[messages.TrackBox(3, (600, 300, 640, 320), True)],
+            keyframe=Keyframe(messages.KeyframeMsg(4, 150.0, 0.0, b""), marked_keyframe((10, 10))),
+            patches={3: Patch(messages.PatchMsg(4, 150.0, 0.0, 3, (592, 292, 648, 328), b""),
+                              image)},
+            poses=poses)
+
+    # The first render in a process pays for OpenCV's set-up (about 15 ms), so the test would
+    # fail when run alone.
+    compositor.render_fovea(view_at(150.0, 0.0), (W, H))
+    view = view_at(alt, jump)
     start = time.perf_counter()
     out = compositor.render_fovea(view, (W, H))
     assert out.shape == (H, W, 3) and time.perf_counter() - start < 0.01
