@@ -150,3 +150,24 @@ TEST(same_seed_same_fates) {
         CHECK(va.fate == vb.fate && va.release_us == vb.release_us);
     }
 }
+
+TEST(changing_the_rate_keeps_the_order_and_the_new_rate) {
+    // A slider dragged through rates: packets already queued keep their release times, so new
+    // ones must not leave before them, and the new rate must not be exceeded.
+    Link link(9);
+    LinkConfig config;
+    config.kbps = 50;  // a 1250 B packet every 200 ms
+    config.queue_ms = 10'000;
+    link.configure(config, 0);
+    link.admit(0, 1230);
+    link.admit(0, 1250);
+    CHECK_EQ(link.admit(0, 1250).release_us, std::int64_t{400'000});
+    config.kbps = 500;  // every 20 ms
+    link.configure(config, 0);
+    CHECK_EQ(link.admit(0, 1250).release_us, std::int64_t{420'000});
+    CHECK_EQ(link.admit(0, 1250).release_us, std::int64_t{440'000});
+    config.kbps = 0;  // unlimited: at once, but after the queue
+    link.configure(config, 0);
+    CHECK_EQ(link.admit(0, 1250).release_us, std::int64_t{440'000});
+    CHECK_EQ(link.admit(500'000, 1250).release_us, std::int64_t{500'000});
+}

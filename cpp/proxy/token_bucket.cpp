@@ -26,4 +26,11 @@ std::int64_t TokenBucket::take(std::int64_t now_us, std::size_t bytes) {
     return now_us + wait;
 }
 
+void TokenBucket::set_rate(double bytes_per_s, std::int64_t now_us) {
+    const double tokens = available(now_us);
+    tokens_ = tokens >= 0.0 ? tokens : tokens / rate_ * bytes_per_s;
+    last_us_ = std::max(last_us_, now_us);
+    rate_ = bytes_per_s;
+}
+
 }  // namespace aegis

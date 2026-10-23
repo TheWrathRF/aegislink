@@ -86,8 +86,10 @@ datagram stays under the 1280-byte IPv6 minimum MTU and is never IP-fragmented.
   3. **Rate limit** (`TokenBucket`, `kbps` > 0): one full datagram (1230 B) deep. A packet that
      finds too few tokens borrows them and leaves once the debt is paid, so the bucket is also
      the FIFO queue; over any interval T at most 1230 + rate x T bytes leave. A packet that would
-     wait longer than `queue_ms` is dropped (drop-tail). The bucket is replaced (full) only when
-     the rate changes.
+     wait longer than `queue_ms` is dropped (drop-tail). A new rate keeps the bucket and turns
+     its debt into the same waiting time at the new rate, so packets already queued leave first
+     and the new rate is never exceeded; with the limit lifted, new packets still leave after
+     the queued ones.
   4. **Delay and jitter**: `delay_ms` plus a uniform extra in `[0, jitter_ms)`; jitter can reorder.
 - **GPS spoofing** (`Spoofer`, one per link): a man-in-the-middle on the telemetry. A forwarded
   datagram that parses as a whole, unfragmented TELEMETRY packet with a 32-byte body gets its

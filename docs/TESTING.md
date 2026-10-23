@@ -118,9 +118,10 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
 - `cpp/tests/test_gilbert_elliott`: loss rate and mean burst length within 2 % over 1,000,000
   draws for five settings, the L = 1 limit, rejected settings, reset to the good state.
 - `cpp/tests/test_token_bucket`: exact release times, a backlog never above depth + rate x T,
-  refill capped at the depth.
+  refill capped at the depth, a new rate keeps the debt as waiting time.
 - `cpp/tests/test_link`: delay and jitter bounds, loss counting, queueing and drop-tail, blackout
-  timing and its precedence, rejected settings, a settings change keeps the rate backlog, seeds.
+  timing and its precedence, rejected settings, a settings change keeps the rate backlog, a rate
+  change (also to unlimited) lets the queued packets leave first and keeps the new rate, seeds.
 - `cpp/tests/test_spoofer`: an idle spoofer changes nothing; an offset moves the position along
   its bearing and the packet still parses (CRC), with every other byte unchanged; a drift grows
   with time; stopping it keeps the offset reached; other types, fragments, bad CRCs and short

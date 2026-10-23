@@ -35,14 +35,17 @@ void Link::configure(const LinkConfig& config, std::int64_t now_us) {
     if (config.loss != config_.loss || config.mean_burst != config_.mean_burst) {
         loss.configure(config.loss, config.mean_burst);
     }
-    // A new bucket starts full, so it is only replaced when the rate changes; otherwise every
-    // change of an unrelated setting would let a burst above the rate through.
+    // A new bucket starts full, so the existing one only changes its rate: a fresh one would let
+    // a burst above the rate through, and new packets would leave before the queued ones.
     if (config.kbps != config_.kbps) {
-        if (config.kbps > 0.0) {
-            // One full-size datagram deep: the largest packet can always leave eventually.
-            bucket_.emplace(config.kbps * 1000.0 / 8.0, static_cast<double>(kMaxDatagram), now_us);
-        } else {
+        const double rate = config.kbps * 1000.0 / 8.0;
+        if (config.kbps == 0.0) {
             bucket_.reset();
+        } else if (bucket_) {
+            bucket_->set_rate(rate, now_us);
+        } else {
+            // One full-size datagram deep: the largest packet can always leave eventually.
+            bucket_.emplace(rate, static_cast<double>(kMaxDatagram), now_us);
         }
     }
     loss_ = loss;
@@ -78,6 +81,9 @@ Verdict Link::admit(std::int64_t now_us, std::size_t bytes) {
         }
         depart_us = bucket_->take(now_us, bytes);
     }
+    // Packets queued before the rate limit was lifted still leave first.
+    depart_us = std::max(depart_us, last_depart_us_);
+    last_depart_us_ = depart_us;
     const double delay_ms = config_.delay_ms + uniform01(rng_) * config_.jitter_ms;
     return {Fate::Forward, depart_us + ms_to_us(delay_ms)};
 }

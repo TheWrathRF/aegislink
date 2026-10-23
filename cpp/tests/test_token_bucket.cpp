@@ -54,3 +54,17 @@ TEST(traffic_at_the_rate_never_waits) {
         CHECK_EQ(bucket.take(t, 625), t);
     }
 }
+
+TEST(a_new_rate_keeps_the_debt_as_time) {
+    TokenBucket bucket(kRate, kDepth, 0);
+    bucket.take(0, 1230);
+    CHECK_EQ(bucket.take(0, 1250), std::int64_t{200'000});
+    // The queued packet still leaves at 200 ms; at ten times the rate the next one follows it
+    // 1250 B later, not at once.
+    bucket.set_rate(10 * kRate, 0);
+    CHECK_EQ(bucket.take(0, 1250), std::int64_t{220'000});
+    // Saved-up tokens are kept as they are.
+    TokenBucket idle(kRate, kDepth, 0);
+    idle.set_rate(10 * kRate, 0);
+    CHECK_EQ(idle.take(0, 1230), std::int64_t{0});
+}

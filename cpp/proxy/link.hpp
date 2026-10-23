@@ -66,6 +66,7 @@ private:
     Spoofer spoofer_;
     GilbertElliott loss_;
     std::optional<TokenBucket> bucket_;  // empty when the rate is unlimited
+    std::int64_t last_depart_us_ = 0;    // of the last packet forwarded, before its delay
     std::int64_t blackout_until_us_ = 0;
     std::mt19937_64 rng_;
     LinkStats stats_;

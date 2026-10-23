@@ -20,6 +20,10 @@ public:
     // Takes the packet's tokens and returns the time at which it may leave.
     std::int64_t take(std::int64_t now_us, std::size_t bytes);
 
+    // Changes the rate. A debt is kept as the time it takes to pay off, so the packets already
+    // queued still leave first and the next one waits for them at the new rate.
+    void set_rate(double bytes_per_s, std::int64_t now_us);
+
 private:
     double available(std::int64_t now_us) const;
 
