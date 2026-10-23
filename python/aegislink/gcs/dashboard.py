@@ -358,12 +358,13 @@ def dark_palette(app):
     pg.setConfigOptions(background=BACKGROUND, foreground="#c8c8c8", antialias=True)
 
 
-def run(station, proxy_port=None, seconds=None, snapshot=None, record=None):
-    """Shows the window until it is closed (or for `seconds`), then prints its frame times and
-    the last second's numbers as one JSON line; returns the frame times."""
+def run(station, proxy_port=None, seconds=None, snapshot=None, record=None, warmup_s=0.0):
+    """Shows the window until it is closed (or for `seconds`), then prints its frame times, what
+    arrived from `warmup_s` after the first foveated datagram until the window closed (see
+    GroundStation.summary) and any error as one JSON line; returns the frame times."""
     app = QApplication.instance() or QApplication([])
     dark_palette(app)
-    receiver = ReceiverThread(station)
+    receiver = ReceiverThread(station, warmup_s=warmup_s)
     proxy = ProxyLink(proxy_port) if proxy_port is not None else None
     window = Dashboard(receiver, proxy, snapshot, record)
     # Ctrl+C would otherwise raise inside a timer slot and end the process at once, without
@@ -381,11 +382,14 @@ def run(station, proxy_port=None, seconds=None, snapshot=None, record=None):
         window.frame_timer.stop()
         window.status_timer.stop()
         window.record_timer.stop()
+        with receiver.lock:
+            received = station.summary(time.monotonic())
         receiver.stop()
         if proxy is not None:
             proxy.close()
     summary = window.clock.summary()
-    received = {key: _round(value) if isinstance(value, float) else value
-                for key, value in getattr(window, "last_stats", {}).items()}
-    print(json.dumps({"frame_times": summary, "received": received}), flush=True)
+    errors = [repr(e) for e in (receiver.error, window.error) if e is not None]
+    print(json.dumps({"frame_times": summary,
+                      "received": received or {"error": "no foveated stream arrived"},
+                      "errors": errors}), flush=True)
     return summary

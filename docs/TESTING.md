@@ -48,7 +48,8 @@ python -m aegislink.uav.main --no-preview --seconds 60 --seed 2
 ```
 
 The whole demo in one command: the proxy, the ground station window and the UAV; closing the
-window stops all three, and the window's frame times are printed as JSON. `--seconds 30
+window stops all three, and the window's frame times and what arrived over the whole run are
+printed as JSON. `--seconds 30
 --snapshot logs/demo.png` closes it after 30 s and saves a picture of it; `--record logs/rec`
 saves the window 10 times a second as numbered JPEGs.
 ```
@@ -212,7 +213,9 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
   new run and not before; one forged frame jump (far below or far ahead) changes nothing, real
   telemetry in between cancels a pending restart, after a 20 s silence the stream goes on
   without a reset; a forged track frame 0xFFFFFFFF before any telemetry does not freeze; older
-  messages not counted; patches only for listed tracks; the dashboard's numbers; the receiver
+  messages not counted; patches only for listed tracks; the dashboard's numbers; the summary
+  starts after the warm-up, counts frames by number and a baseline frame from before the
+  measurement not at all; the receiver
   thread receives, reports and stops; impossible altitudes (0, negative, NaN, infinite, 1e30)
   and headings (NaN, infinite) in telemetry, patches and keyframes dropped; a patch much larger
   than its box dropped; `--snapshot` and `--record` refused without the window. Ghost tracks:

@@ -444,3 +444,28 @@ def test_a_real_track_survives_a_flood_of_forged_ids(station):
         32, [messages.TrackBox(7, centre_box(), True)] + forged[:200]), now_s=1.06)
     # The real track has the newest fix, so it is not the one replaced.
     assert 7 in station.ghosts.tracks
+
+
+def test_the_summary_starts_after_the_warmup_and_counts_frames_by_number(station):
+    assert station.summary(1.0) is None                 # nothing arrived
+    deliver(station, MsgType.TELEMETRY, telemetry_at(98), now_s=1.0)
+    station.start_measuring_if_due(2.9, warmup_s=2.0)
+    assert station.measurement.start_s is None
+    station.start_measuring_if_due(3.0, warmup_s=2.0)
+    assert station.measurement.start_s == 3.0
+    jpeg = cv2.imencode(".jpg", np.zeros((720, 1280, 3), np.uint8))[1].tobytes()
+    # Baseline frame 99 arrives after the measurement started but belongs to a frame before it.
+    deliver(station, MsgType.FULL_FRAME,
+            messages.encode_full_frame(messages.FullFrameMsg(99, jpeg)), 3.0, "baseline")
+    for frame in range(100, 130):
+        now = 3.0 + (frame - 100) / 30
+        deliver(station, MsgType.TELEMETRY, telemetry_at(frame), now_s=now)
+        if frame % 10:
+            deliver(station, MsgType.TRACKS, messages.encode_tracks(frame, []), now_s=now)
+            deliver(station, MsgType.FULL_FRAME,
+                    messages.encode_full_frame(messages.FullFrameMsg(frame, jpeg)), now, "baseline")
+    s = station.summary(5.0)
+    assert s["seconds"] == 2.0 and s["uav_fps"] == 15.0
+    assert s["tracks_delivered"] == pytest.approx(27 / 29, abs=1e-4)    # 101 ... 129
+    assert s["baseline_delivered"] == 0.9                               # 27 of 30, not 28
+    assert station.summary(9.0)["seconds"] == 2.0                       # stopped at the first

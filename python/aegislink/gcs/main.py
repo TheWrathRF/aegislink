@@ -5,9 +5,10 @@
 
 It receives the foveated stream and the baseline from the proxy (or, with --direct, from the
 UAV) and sends receiver reports back 4 times per second. The window's EW deck sets the proxy's
-links through its control port. When the window closes, its frame times are printed as one JSON
-line. Without a window, --summary prints, as one JSON line, what arrived between --warmup seconds
-after the first foveated datagram and --seconds after that. Every track is followed by a Kalman
+links through its control port. Both measure what arrives from --warmup seconds after the first
+foveated datagram: when the window closes, its frame times and that measurement are printed as
+one JSON line; without a window, --summary prints the measurement over --seconds as one JSON
+line. Every track is followed by a Kalman
 filter in ground metres (--motion-model); --track-log writes its predictions 30 times a second.
 """
 
@@ -34,11 +35,10 @@ def run_headless(station, seconds=None, warmup_s=0.0):
             now = time.monotonic()
             station.send_report_if_due(now)
             station.log_tracks_if_due(now)
+            station.start_measuring_if_due(now, warmup_s)
             if station.first_fovea_s is None:
                 if seconds is not None and now - started > NOTHING_ARRIVES_S:
                     break
-            elif m.start_s is None and now >= station.first_fovea_s + warmup_s:
-                m.start_s = now
             elif seconds is not None and m.active and now >= m.start_s + seconds:
                 m.stop_s = now
                 break
@@ -86,23 +86,16 @@ def main():
             # Only the window needs Qt; the headless station runs without it.
             from aegislink.gcs import dashboard
             dashboard.run(station, None if args.direct else args.proxy_control, args.seconds,
-                          args.snapshot, args.record)
+                          args.snapshot, args.record, args.warmup)
     except KeyboardInterrupt:
         pass
     finally:
         station.close()
-    m = station.measurement
     if args.summary:
-        if m.start_s is None:
+        result = station.summary(time.monotonic())
+        if result is None:
             print(json.dumps({"error": "no foveated stream arrived"}))
             sys.exit(1)
-        result = m.summary()
-        fovea = station.links["fovea"]
-        result["bad_packets"] = fovea.bad + station.links["baseline"].bad
-        result["bad_messages"] = station.bad_messages
-        result["expired"] = fovea.reassembler.stats.expired
-        result["gps_alarms"] = station.spoof.alarms
-        result["undecided_keyframe_pairs"] = station.spoof.undecided
         print(json.dumps(result))
 
 

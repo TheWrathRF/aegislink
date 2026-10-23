@@ -402,11 +402,14 @@ on Windows a send to a closed port makes the next receive on the same socket fai
   mean, covariance (xx, xy, yy) and the filtered position at the last fix; and `nav`: the newest
   telemetry's frame, its GPS position, the position used for it and whether the spoofing alarm
   is on. Every line is flushed, so a stopped process leaves only whole lines.
-- With `--no-view` the station runs in one loop and `--summary` prints one JSON line about the
-  `--seconds` after `--warmup` seconds from the first foveated datagram: kbps per link and their
-  ratio, telemetry and track messages per second and the share of frames that arrived, patches
-  per second, keyframes, baseline frames per second, bad packets and messages, expired partial
-  messages, GPS spoofing alarms and keyframe pairs the check could not decide.
+- Both modes measure what arrives from `--warmup` seconds after the first foveated datagram.
+  With `--no-view` the station runs in one loop and `--summary` prints one JSON line about the
+  `--seconds` after that: kbps per link and their ratio, telemetry and track messages per second
+  and the share of frames that arrived, the UAV's frame rate (from the telemetry's frame
+  numbers), patches per second, keyframes, baseline frames per second and the share of the
+  UAV's frames whose baseline arrived, bad packets and messages, expired partial messages, GPS
+  spoofing alarms and keyframe pairs the check could not decide. The shares count frames by
+  number, so they do not depend on how fast the UAV runs on the machine.
 
 ### Ghost tracks (`gcs/ghost_tracks.py`)
 One Kalman filter (constant velocity by default, `--motion-model ca` for constant acceleration)
@@ -532,7 +535,8 @@ would scale by more than 4 (or less than 1/4) is not drawn.
   (at most 1280 x 720), decode the baseline JPEG once per frame and scale it, and paint both
   views at once (`repaint`). `FrameClock` records each frame's work time and the interval
   between frame starts; the status line shows their 95th percentiles, and when the window closes
-  they are printed as one JSON line with the last second's numbers.
+  they are printed as one JSON line with the same measurement as `--summary` (from `--warmup`
+  until the window closed) and any error the receiver or the window ran into.
 - Every 125 ms half of the numbers and one of the two plots are refreshed, in turn: a plot takes
   3-5 ms to paint, and both in one frame made the next frame late.
 - No foveated datagram for 0.5 s: the view shows LINK LOST and how long. While the GPS spoofing

@@ -70,14 +70,15 @@ class View:
 
 
 class Measurement:
-    """What arrived between start() and stop(), for the summary of a headless run."""
+    """What arrived between its start and stop times: the summary of a run, headless or with the
+    window."""
 
     def __init__(self):
         self.start_s = None
         self.stop_s = None
         self.bytes = Counter()          # link name -> datagram bytes
         self.messages = Counter()       # MsgType -> messages
-        self.frames = {MsgType.TELEMETRY: set(), MsgType.TRACKS: set()}
+        self.frames = {MsgType.TELEMETRY: set(), MsgType.TRACKS: set(), MsgType.FULL_FRAME: set()}
 
     @property
     def active(self):
@@ -95,9 +96,19 @@ class Measurement:
             span = max(frames) - min(frames) + 1 if frames else 0
             result[f"{name}_hz"] = round(len(frames) / seconds, 2)
             result[f"{name}_delivered"] = round(len(frames) / span, 4) if span else 0.0
+        # The frames the UAV made, from the telemetry's frame numbers: the baseline's own span
+        # would call one lone frame that got through a full delivery.
+        telemetry = self.frames[MsgType.TELEMETRY]
+        first, last = (min(telemetry), max(telemetry)) if telemetry else (0, -1)
+        made = last - first + 1
+        result["uav_fps"] = round(made / seconds, 2)
         result["patches_per_s"] = round(self.messages[MsgType.ROI_PATCH] / seconds, 2)
         result["keyframes"] = self.messages[MsgType.BG_KEYFRAME]
         result["baseline_fps"] = round(self.messages[MsgType.FULL_FRAME] / seconds, 2)
+        # A baseline frame arrives later than its telemetry, so the first one measured may be
+        # older than the first telemetry measured.
+        arrived = sum(1 for f in self.frames[MsgType.FULL_FRAME] if first <= f <= last)
+        result["baseline_delivered"] = round(arrived / made, 4) if made else 0.0
         return result
 
 
@@ -225,7 +236,7 @@ class GroundStation:
         if self.measurement.active:
             self.measurement.messages[message.type] += 1
             if message.type in self.measurement.frames:
-                frame = body.frame if message.type == MsgType.TELEMETRY else body[0]
+                frame = body[0] if message.type == MsgType.TRACKS else body.frame
                 self.measurement.frames[message.type].add(frame)
 
     def _plausible(self, frame, now_s):
@@ -429,6 +440,29 @@ class GroundStation:
             "flow_speed": self.spoof.flow_speed(),
         }
 
+    def start_measuring_if_due(self, now_s, warmup_s):
+        """Starts the measurement `warmup_s` after the first foveated datagram."""
+        m = self.measurement
+        if m.start_s is None and self.first_fovea_s is not None:
+            if now_s >= self.first_fovea_s + warmup_s:
+                m.start_s = now_s
+
+    def summary(self, now_s):
+        """Stops the measurement and returns what arrived, or None if it never started."""
+        m = self.measurement
+        if m.start_s is None:
+            return None
+        if m.active:
+            m.stop_s = now_s
+        result = m.summary()
+        fovea = self.links["fovea"]
+        result["bad_packets"] = fovea.bad + self.links["baseline"].bad
+        result["bad_messages"] = self.bad_messages
+        result["expired"] = fovea.reassembler.stats.expired
+        result["gps_alarms"] = self.spoof.alarms
+        result["undecided_keyframe_pairs"] = self.spoof.undecided
+        return result
+
     def send_report_if_due(self, now_s):
         if self.next_report_s is None:
             self.next_report_s = now_s
@@ -447,9 +481,10 @@ class ReceiverThread:
     """Runs a GroundStation in its own thread, so that drawing never holds up receiving or the
     receiver reports. The UI reads the station only through `snapshot`, under the same lock."""
 
-    def __init__(self, station, poll_s=0.005):
+    def __init__(self, station, poll_s=0.005, warmup_s=0.0):
         self.station = station
         self.poll_s = poll_s
+        self.warmup_s = warmup_s    # the measurement starts this long after the first datagram
         self.lock = threading.Lock()
         self.error = None           # the exception that stopped the thread, if any
         self._stopping = threading.Event()
@@ -472,6 +507,7 @@ class ReceiverThread:
                 with self.lock:
                     self.station.read(readable)
                     now = time.monotonic()
+                    self.station.start_measuring_if_due(now, self.warmup_s)
                     self.station.send_report_if_due(now)
                     self.station.log_tracks_if_due(now)
         except Exception as e:      # shown by the UI instead of dying silently
