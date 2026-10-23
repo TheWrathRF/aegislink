@@ -59,7 +59,9 @@ ghost; when the link returns, the boxes snap back onto the cars.*
   99 %) raise an alarm, and until five agree again the station navigates by the flow alone. The
   proxy's attacker recomputes the CRC, so its packets are accepted: a CRC catches noise, not an
   attacker (a real link would add a message authentication code, which is left out here on
-  purpose).
+  purpose). The GPS check catches a spoofer that only moves the position; an attacker who forges
+  other messages can do more, for example end every ghost track with one forged empty track
+  list.
 - **Scripted scenarios**: JSON timelines of link settings (`scenarios/`) that run the proxy,
   the ground station and the UAV together and score what arrived against the ground truth.
 

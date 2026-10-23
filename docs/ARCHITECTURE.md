@@ -430,7 +430,11 @@ with the camera's, ground metres do not.
   detected for 1 s), so it is not waiting for the link. In a blackout no list arrives, so every
   track carries on as a ghost; a track the UAV still lists while it coasts turns GHOST after
   150 ms like any other. (On the real clip, where cars leave the view all the time, keeping
-  dropped tracks for 10 s left 17-24 ghosts with ellipses up to 100 m across the view.) At most
+  dropped tracks for 10 s left 17-24 ghosts with ellipses up to 100 m across the view.) The link
+  has no authentication, so this rule trusts every list that passes the CRC: a man-in-the-middle
+  who forges one empty track list with a plausible frame number (up to 1 s ahead of the UAV
+  clock) ends every track, during a blackout too. Waiting longer before ending a track would
+  only make the attacker send more lists; only a message authentication code would stop it. At most
   64 tracks are kept: when full, a new id replaces the track with the oldest
   fix, or is refused if every track was fixed at that same moment (a forged track list of 255
   new ids cannot fill the station with filters that every drawn frame works through).
