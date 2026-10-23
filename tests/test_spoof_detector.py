@@ -227,3 +227,38 @@ def test_keyframes_too_far_apart_are_not_compared(flight):
     detector.add_keyframe(f0, a, pa.alt, pa.heading_deg, (pa.east, pa.north))
     detector.add_keyframe(f1, b, pb.alt, pb.heading_deg, (pb.east + 100, pb.north))
     assert detector.undecided == 1 and detector.d2 is None
+
+
+def without(flight, start_s, end_s):
+    """The keyframes less those strictly between start_s and end_s: a gap, as on a slow link."""
+    return [k for k in flight if not start_s < k[0] / config.FPS < end_s]
+
+
+def test_a_jump_inside_a_gap_raises_the_alarm_once_keyframes_return(flight):
+    # 10.0 -> 14.0 s is too far apart to compare; the GPS jumps 50 m at 12 s, in between.
+    detector, out = run(without(flight, 10.0, 14.0), lambda t: (0.0, 50.0) if t >= 12.0 else (0.0, 0.0))
+    assert detector.undecided == 1
+    first = next(t for t, alarm, _, _ in out if alarm)
+    assert first == pytest.approx(15.5)                 # keyframes at 14.5, 15.0, 15.5
+    assert detector.alarm and detector.alarms == 1
+
+
+def test_gaps_between_keyframes_raise_no_alarm_on_a_clean_flight(flight):
+    detector, out = run(without(without(without(flight, 5.0, 9.0), 15.0, 20.0), 25.0, 32.0))
+    assert detector.undecided == 3 and detector.alarms == 0
+    assert max(d2 for _, _, d2, _ in out if d2 is not None) < spoof_detector.CHI2_99
+
+
+def test_the_station_finds_a_jump_made_inside_a_gap(station, flight):
+    fly_station(station, without(flight, 10.0, 14.0),
+                lambda t: (50.0, 0.0) if t >= 12.0 else (0.0, 0.0), 20.0)
+    stats = station.stats(20.0)
+    assert stats["gps_alarm"] and stats["gps_alarms"] == 1
+
+
+def test_after_a_long_gap_the_flow_follows_pairs_again_without_an_alarm(flight):
+    # 20 s without keyframes, then pairs 2 s apart: the last flow velocity is too old to place
+    # the search windows, the GPS velocity of the pair before is not.
+    later = [k for k in flight if k[0] / config.FPS in (30.0, 32.0, 34.0, 36.0, 38.0)]
+    detector, out = run([k for k in flight if k[0] / config.FPS <= 10.0] + later)
+    assert detector.undecided == 1 and detector.alarms == 0

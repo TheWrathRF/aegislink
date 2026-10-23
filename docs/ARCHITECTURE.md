@@ -475,8 +475,9 @@ camera really moved. The check compares the two at every new keyframe.
   errors that all points share. Fewer than 30 points left: no result.
 - The search windows start where an expected displacement puts the points: the last flow
   velocity times the time between the keyframes, or the GPS velocity of the previous pair if
-  the flow has none yet. A pair a few seconds apart is otherwise too far for the flow to find;
-  a wrong guess only makes the pair fail.
+  the flow has none yet or could not follow the previous pair (after a long gap the old flow
+  velocity can be far off, and the pairs after it would fail too). A pair a few seconds apart is
+  otherwise too far for the flow to find; a wrong guess only makes the pair fail.
 - **The chain**: the flow displacements are added up from the last keyframe whose GPS was
   trusted. At each keyframe the GPS position minus the chain's position is the residual `r`,
   and `d2 = r^T S^-1 r`, with `S` the chain's summed covariance plus (0.05 m)^2 per axis for the
@@ -489,14 +490,21 @@ camera really moved. The check compares the two at every new keyframe.
   never tied to the GPS, and `fallback` is a `FlowPath`: the chain's position at each keyframe
   since the last trusted one, a straight line in between, and after the newest one the last
   flow velocity. 5 keyframes in a row that agree with the GPS again clear it.
-- A pair the flow cannot follow, or more than 3 s apart, decides nothing: without an alarm the
-  chain starts again at the new keyframe; during one it is carried on with the last velocity,
-  its uncertainty growing by 3 m/s per second. A keyframe of the frame already checked is
-  ignored; an older one (the UAV started again) starts everything again.
+- A pair the flow cannot follow, or more than 3 s apart, decides nothing: the chain is carried
+  on with the last flow velocity, its uncertainty growing by 3 m/s per second, and the next
+  pair the flow follows is compared against it. It is not tied to the GPS there: a jump made
+  while keyframes were sparse would become the reference, and every later pair would agree
+  with it. Only before the flow has given any velocity does the chain start again at the new
+  keyframe. A keyframe of the frame already checked is ignored; an older one (the UAV started
+  again) starts everything again.
 - It only works where keyframes arrive: on a slow link they come seconds apart (the 15 % budget
-  share), and a total blackout brings none. A drift slow enough that each pair's residual stays
-  under the threshold is not caught, because the chain is tied to the GPS at every keyframe that
-  agrees.
+  share), and a total blackout brings none. A jump made during such a gap is found once pairs
+  can be compared again, if it stands out from the coasted uncertainty (3 m per second of gap,
+  one sigma per axis): a 50 m jump in a 4 s gap does. After a long stretch of sparse keyframes,
+  such as the seconds after a rate limit is lifted while the budget grows back, the uncertainty
+  can exceed the jump, and the jump is accepted. A drift slow
+  enough that each pair's residual stays under the threshold is not caught, because the chain
+  is tied to the GPS at every keyframe that agrees.
 
 ### Compositor (`gcs/compositor.py`)
 Every piece arrives in the pixels of the frame it was captured in, and the view is drawn from

@@ -14,7 +14,9 @@ the GPS. Chained from keyframe to keyframe (visual odometry), it is compared wit
   positions come from the flow (`FlowPath`). 5 keyframes in a row that agree with the GPS
   again clear it.
 
-A pair of keyframes too far apart in time, or one the flow cannot follow, decides nothing.
+A pair of keyframes too far apart in time, or one the flow cannot follow, decides nothing: the
+chain is carried on by the last velocity with a growing uncertainty, so a jump made while
+keyframes are sparse (on a slow link) is still seen at the next pair the flow can follow.
 """
 
 import bisect
@@ -42,8 +44,8 @@ INLIER_M = 1.0
 # Per axis and keyframe pair: the flow's spread underestimates errors shared by all points.
 FLOW_FLOOR_M = 0.1
 GPS_SIGMA_M = 0.05
-# When a pair cannot be followed during an alarm, the chain is carried on by the last velocity
-# with this much more uncertainty per second.
+# When a pair cannot be followed, the chain is carried on by the last velocity with this much
+# more uncertainty per second.
 COAST_SIGMA_MPS = 3.0
 LK_PARAMS = dict(winSize=(21, 21), maxLevel=3, flags=cv2.OPTFLOW_USE_INITIAL_FLOW,
                  criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 0.01))
@@ -134,6 +136,7 @@ class SpoofDetector:
         self.positions = []         # the chain's position at each
         self.cov = np.zeros((2, 2))     # its uncertainty at the last one
         self.velocity = None        # from the last pair the flow followed, m/s
+        self.followed = False       # whether the flow followed the last pair
         self.alarm = False
         self.suspect = 0            # keyframes in a row that disagree with the GPS
         self.agree = 0              # and that agree
@@ -178,18 +181,25 @@ class SpoofDetector:
         last_position = np.array(self.positions[-1])
         # The guess only places the search windows: without one, a pair a few seconds apart is
         # too far for the flow to find. A wrong one makes the pair undecided, never an alarm.
-        expected = self.velocity or self.gps_velocity or (0.0, 0.0)
+        # After a pair the flow could not follow, its last velocity may be long out of date, and
+        # the GPS's over that pair is the better guess.
+        recent = self.velocity if self.followed else None
+        expected = recent or self.gps_velocity or self.velocity or (0.0, 0.0)
         self.gps_velocity = tuple((gps - old.gps) / dt)
         flow = None
         if dt <= MAX_PAIR_S:
             flow = flow_displacement(old.image, old.attitude, image, new.attitude,
                                      tuple(np.array(expected) * dt))
+        self.followed = flow is not None
         if flow is None:
             self.undecided += 1
-            if not self.alarm:
+            if self.velocity is None:
+                # Nothing to carry the chain on with yet.
                 self.suspect = self.agree = 0
                 self._tie(frame, gps)
             else:
+                # Not tied to the GPS here: a jump made during the gap would become the new
+                # reference, and every later pair would agree with it.
                 coast = (COAST_SIGMA_MPS * dt) ** 2 * np.eye(2)
                 self._extend(frame, last_position + np.array(self.velocity) * dt, self.cov + coast)
             return
