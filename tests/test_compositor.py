@@ -263,6 +263,27 @@ def test_ellipse_path_and_label_are_drawn_where_the_filter_says():
     assert cols.max() - CAMERA.cx == pytest.approx(20 / mpp, abs=2)
 
 
+def test_labels_and_lines_grow_with_the_text_scale():
+    view = View(telemetry(5, 0.0, 0.0), 5, [], None, {}, history(telemetry(5, 0.0, 0.0)))
+    view.ghosts = [estimate(8, "GHOST", (0.0, 0.0), np.diag([16.0, 4.0]))]
+    normal = colour_mask(compositor.render_fovea(view, (W, H)), compositor.GHOST_COLOR).sum()
+    double = colour_mask(compositor.render_fovea(view, (W, H), text_scale=2.0),
+                         compositor.GHOST_COLOR).sum()
+    assert double > 1.8 * normal
+
+
+def test_the_area_outside_an_old_keyframe_is_grey_not_black():
+    # The keyframe was taken at heading 0; the camera has turned 45 degrees since.
+    poses = history(telemetry(4, 0.0, 0.0), telemetry(5, 0.0, 0.0))
+    view = View(telemetry(5, 0.0, 0.0, heading=45.0), 5, [],
+                Keyframe(messages.KeyframeMsg(4, 150.0, 0.0, b""),
+                         np.full((KEYFRAME_SIZE[1], KEYFRAME_SIZE[0]), 120, np.uint8)),
+                {}, poses)
+    out = compositor.render_fovea(view, (W, H))
+    assert tuple(out[2, 2]) == compositor.NO_PICTURE
+    assert tuple(out[H // 2, W // 2]) == (120, 120, 120)
+
+
 def test_ghosts_are_not_drawn_without_a_view_pose():
     view = View(None, None, [], None, {}, PoseHistory())
     view.ghosts = [estimate(1, "GHOST", (0.0, 0.0), np.eye(2))]

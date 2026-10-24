@@ -30,6 +30,9 @@ W, H = config.FRAME_WIDTH, config.FRAME_HEIGHT
 FEATHER_PX = 6
 MAX_CACHED_FEATHER_PX = 256 * 256
 GREEN, AMBER = (0, 255, 0), (0, 200, 255)
+# Where the keyframe, turned and moved with the camera, does not reach. Black there read as a
+# broken picture; a dark grey reads as "no background here yet".
+NO_PICTURE = (48, 44, 40)
 LIVE_COLOR, GHOST_COLOR = (255, 210, 90), (255, 80, 255)
 # A track's path starts this far from its centre, so that it never covers the vehicle (half a
 # truck's length plus a little).
@@ -109,7 +112,12 @@ def _ghost_label(e):
     return f"{e.id} GHOST {e.tslf_s:.1f} s"
 
 
-def _draw_estimate(canvas, e, view_pose, out, labelled):
+def _label(canvas, text, origin, color, text_scale):
+    cv2.putText(canvas, text, origin, cv2.FONT_HERSHEY_SIMPLEX, 0.5 * text_scale, color,
+                max(1, round(text_scale)), cv2.LINE_AA)
+
+
+def _draw_estimate(canvas, e, view_pose, out, labelled, text_scale):
     """The predicted path of one track; for a GHOST also its 95 % ellipse, and its label when it
     has no box."""
     w = canvas.shape[1]
@@ -121,15 +129,16 @@ def _draw_estimate(canvas, e, view_pose, out, labelled):
     color = GHOST_COLOR if e.state == GHOST else LIVE_COLOR
     ahead = e.path[np.linalg.norm(e.path - e.mean, axis=1) > PATH_CLEARANCE_M]
     if len(ahead) >= 2:
-        cv2.polylines(canvas, [to_canvas(ahead)], False, color, 1, cv2.LINE_AA)
+        cv2.polylines(canvas, [to_canvas(ahead)], False, color, max(1, round(text_scale)),
+                      cv2.LINE_AA)
     if e.state != GHOST:
         return
     ring = to_canvas(ellipse_points(e.mean, e.cov))
-    cv2.polylines(canvas, [ring], True, GHOST_COLOR, 2, cv2.LINE_AA)
+    cv2.polylines(canvas, [ring], True, GHOST_COLOR, max(1, round(2 * text_scale)), cv2.LINE_AA)
     if not labelled:
         x, y = ring[np.argmin(ring[:, 1])]
-        cv2.putText(canvas, _ghost_label(e), (int(x) - 30, int(y) - 6), cv2.FONT_HERSHEY_SIMPLEX,
-                    0.5, GHOST_COLOR, 1, cv2.LINE_AA)
+        _label(canvas, _ghost_label(e), (int(x - 30 * text_scale), int(y - 6 * text_scale)),
+               GHOST_COLOR, text_scale)
 
 
 def track_boxes(view, scale):
@@ -217,8 +226,9 @@ def _paste(canvas, patch, box, view, out, motions):
     canvas[ry1:ry2, rx1:rx2] = (roi * (1 - alpha) + image * alpha + 0.5).astype(np.uint8)
 
 
-def render_fovea(view, size, boxes=True):
-    """The foveated view as a BGR image of `size` (width, height)."""
+def render_fovea(view, size, boxes=True, text_scale=1.0):
+    """The foveated view as a BGR image of `size` (width, height). `text_scale` sizes the labels
+    and lines: the image's pixels per screen pixel, so that they read the same at any size."""
     w, h = size
     out = _scale(w / W, h / H)
     k = view.keyframe
@@ -226,9 +236,9 @@ def render_fovea(view, size, boxes=True):
     if motion is not None:
         to_camera = _scale(W / KEYFRAME_SIZE[0], H / KEYFRAME_SIZE[1])
         m = out @ motion @ to_camera
-        gray = cv2.warpAffine(k.image, m[:2], (w, h), flags=cv2.INTER_LINEAR,
-                              borderMode=cv2.BORDER_CONSTANT)
-        canvas = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+        canvas = cv2.warpAffine(cv2.cvtColor(k.image, cv2.COLOR_GRAY2BGR), m[:2], (w, h),
+                                flags=cv2.INTER_LINEAR, borderMode=cv2.BORDER_CONSTANT,
+                                borderValue=NO_PICTURE)
     else:
         canvas = np.zeros((h, w, 3), np.uint8)
 
@@ -247,13 +257,15 @@ def render_fovea(view, size, boxes=True):
             e = ghosts.get(track.id)
             ghost = e is not None and e.state == GHOST
             color = GHOST_COLOR if ghost else GREEN if track.seen else AMBER
-            cv2.rectangle(canvas, (x1 - 2, y1 - 2), (x2 + 2, y2 + 2), color, 2)
-            cv2.putText(canvas, _ghost_label(e) if ghost else str(track.id), (x1, y1 - 6),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1, cv2.LINE_AA)
+            pad = round(2 * text_scale)
+            cv2.rectangle(canvas, (x1 - pad, y1 - pad), (x2 + pad, y2 + pad), color,
+                          max(1, pad))
+            _label(canvas, _ghost_label(e) if ghost else str(track.id),
+                   (x1, y1 - round(6 * text_scale)), color, text_scale)
         if view_pose is not None:
             boxed = {track.id for track, _ in view_boxes}
             for e in view.ghosts:
-                _draw_estimate(canvas, e, view_pose, out, e.id in boxed)
+                _draw_estimate(canvas, e, view_pose, out, e.id in boxed, text_scale)
     return canvas
 
 
