@@ -25,6 +25,9 @@ C++ change, since the proxy tests run the installed binary):
 python -m pip install -e ".[test]"
 python -m pytest
 ```
+The tests that run the real processes (the proxy, the nodes, the demo, the live scenario runs)
+are marked `slow`; `python -m pytest -m "not slow"` leaves them out (about 40 s instead of about
+3 minutes here).
 
 Loopback check (a 50 KB message over loopback UDP in 42 fragments):
 ```
@@ -140,8 +143,9 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
 - `tests/test_ghost_tracks.py`: a box centre lands on its ground point at four headings; the box
   noise turned and scaled into metres; more variance for a box at (or within two sigmas of) the
   image edge; LIVE, GHOST and LOST (by time, and by ellipse size for constant acceleration); old
-  measurements and coasting boxes ignored; the path runs ahead along the velocity; ellipse
-  points on the 95 % contour. Consistency: 90 s of a whole simulated map, every vehicle measured
+  measurements and coasting boxes ignored; the path runs ahead along the velocity and is the
+  filter's own prediction; ellipse points on the 95 % contour; at most `MAX_TRACKS` tracks, a
+  new id replacing the one with the oldest fix (and refused when all were fixed at that moment). Consistency: 90 s of a whole simulated map, every vehicle measured
   except during 5 s blackouts every 10 s; the truth must lie inside the ellipse in 90-98 % of the
   blackout frames for both models (it fails with a process noise of 0.5: 75 %).
 - `tests/test_loopback.py`: real UDP sockets on 127.0.0.1.
@@ -161,7 +165,8 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
   vehicle and lower `visible`; boxes are clipped at the image edge; the flight keeps the followed
   vehicle in view over 95 % of 60 s, rolls under 30 degrees, and its telemetry matches its pose.
 - `tests/test_tracker.py`: IoU; detection rate, edge noise (mean and sigma within 5 %) and false
-  boxes over 10,000-20,000 frames; hidden and cut-off vehicles never detected; ids kept through
+  boxes over 10,000-20,000 frames; hidden and cut-off vehicles never detected, a vehicle 65 %
+  visible found at about half the clear-view rate; ids kept through
   gaps of 10-12 frames, through a crossing, and while the camera stops turning during a 12-frame
   gap (the last fails without camera-motion compensation); one-frame false detections never
   become tracks; a track ends after 30 missed frames.
@@ -216,7 +221,8 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
   new run and not before; one forged frame jump (far below or far ahead) changes nothing, real
   telemetry in between cancels a pending restart, after a 20 s silence the stream goes on
   without a reset; a forged track frame 0xFFFFFFFF before any telemetry does not freeze; older
-  messages not counted; patches only for listed tracks; the dashboard's numbers; the summary
+  messages not counted; patches only for listed tracks; a real track survives a flood of 255
+  forged ids (it has the newest fix); the dashboard's numbers; the summary
   starts after the warm-up, counts frames by number and a baseline frame from before the
   measurement not at all; the receiver
   thread receives, reports and stops; impossible altitudes (0, negative, NaN, infinite, 1e30)
@@ -281,8 +287,9 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
   snapshot; with the UAV's report port taken, the UAV stops and `run_demo` exits with an error.
   A test that runs out of time kills the whole process tree, the proxy included. About 15 s.
 - `tests/test_stream.py`: the UAV, the proxy and the GCS as three processes, measured by the
-  GCS over 8 s after a 5 s warm-up. Clean link: the foveated stream is at most 10 % of the
-  baseline and 99 % of frames' telemetry, tracks and baseline frames arrive. Both links at 50
+  GCS over 8 s after a 5 s warm-up. Clean link: no bad packets or messages, the foveated stream
+  is at most 10 % of the baseline, 99 % of frames' telemetry, tracks and baseline frames arrive,
+  with at least 5 patches per second and 6 keyframes. Both links at 50
   kbps: the foveated stream stays under the limit, 99 % of frames' tracks arrive, and no
   baseline frame gets through. The rates must only stay above 15 per second (the UAV's own
   frame rate depends on the machine). About 30 s.
@@ -302,7 +309,7 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
   under 15 ms per frame (about 20 s more).
 
 ## CI
-`.github/workflows/ci.yml` runs on every push: Windows (`msvc` preset) and Ubuntu (`gcc-asan`
+`.github/workflows/ci.yml` runs on every push and pull request: Windows (`msvc` preset) and Ubuntu (`gcc-asan`
 preset), CTest, then `pip install ".[test]"` and pytest. On Ubuntu it installs the system
 libraries that Qt's offscreen platform needs for the dashboard tests. It installs neither the
 `gpu` extra nor a model, so the YOLO test on the GPU is skipped there.

@@ -3,3 +3,4 @@
 *.png binary
 *.webp binary
 *.onnx binary
+*.gif binary

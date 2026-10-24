@@ -1,6 +1,6 @@
 {
   "name": "spoof_drift",
-  "description": "The telemetry position drifts east at 3 m/s for 20 s, then is right again; twice",
+  "description": "The telemetry position drifts at 3 m/s, east for 20 s and later south-southwest for 16 s, and is right again after each",
   "seconds": 60,
   "warmup_s": 5,
   "seed": 1,

@@ -175,12 +175,14 @@ Everything uses a local frame in metres: x = east, y = north, origin at the map 
   vehicle's footprint against it.
 - **Vehicles** (default 16 per loop, 15 % trucks of 8 x 2.5 m, cars 4.5 x 1.9 m): each has a
   position `s` along its loop and a direction. Per step (1/30 s): a vehicle aims for its desired
-  speed (7-13 m/s), or for 0 when it is due to stop (every 15-45 s, for 2-6 s), but never faster
+  speed (7-13 m/s), or for 0 when it is due to stop (first 5-40 s after the start, then every
+  15-45 s, for 2-6 s), but never faster
   than `(gap - 3 m) / 1.2 s` to the vehicle ahead in its lane; it accelerates at up to 2 m/s^2
   and brakes at up to 6 m/s^2, and its move is cut so the bumper gap never drops below 1 m.
-- **Rendering** (`render(camera, pose)`): one `warpAffine` of the ground raster through the
+- **Rendering** (`render(camera, pose, poses)`): one `warpAffine` of the ground raster through the
   camera's pixel -> ground -> raster matrix, then the vehicles (body and roof as anti-aliased
-  polygons), then trees and bridges near the view. It returns the image and a `Truth` per vehicle
+  polygons), then trees and bridges near the view. `poses` are every vehicle's position and
+  heading from `vehicle_poses()`, computed once per frame and also used for the ground-truth log. It returns the image and a `Truth` per vehicle
   near the view: its axis-aligned pixel box clipped to the image, the share of the box inside the
   image (`in_frame`) and `visible`. About 4 ms per 1280 x 720 frame.
 
@@ -221,7 +223,7 @@ Everything uses a local frame in metres: x = east, y = north, origin at the map 
   corners, pyramidal Lucas-Kanade flow, `estimateAffinePartial2D` with RANSAC, so moving vehicles
   are outliers), and the chained similarity transforms give position, heading and altitude
   relative to the first frame, which is put at the origin, heading north, at `--alt0` metres (a
-  guess from the size of a car). A frame that cannot be registered (fewer than 20 agreeing
+  guess from the size of a car; it must be above 0 m). A frame that cannot be registered (fewer than 20 agreeing
   points) is assumed to move like the one before. Telemetry comes from that path: ground speed
   from the frames on both sides, pitch and roll 0 (the gimbal hides the airframe's tilt). Past
   its end the clip plays backwards and then forwards again, so images and telemetry never jump.
@@ -249,7 +251,8 @@ Everything uses a local frame in metres: x = east, y = north, origin at the map 
 
 ## UAV loop and ground-truth log (`uav/main.py`)
 `python -m aegislink.uav.main [--seconds 60] [--seed 1] [--no-preview] [--log PATH] [--send]
-[--video CLIP]`
+[--direct] [--no-baseline] [--fovea-port P] [--baseline-port P] [--report-port P] [--video CLIP]
+[--alt0 M] [--model ONNX]`
 
 - `UavSim.step()` renders the current state, detects, tracks (with the camera motion since the
   last frame), then advances the world and the flight by 1/30 s. A seed fixes the whole run.
@@ -289,7 +292,7 @@ Every decoder checks the length first and raises `ValueError`.
 |---|---|---|
 | TELEMETRY | frame u32, lat i32, lon i32 (1e-7 degree), alt, speed, heading, pitch, roll (f32) | 32 |
 | TRACKS | frame u32, count u8, then per track: id u16, x1 y1 x2 y2 i16 (pixels), flags u8 (1 = matched this frame) | 5 + 11 per track |
-| ROI_PATCH | frame u32, alt f32, heading f32, track id u16, crop box 4 x i16, WebP | 20 + image |
+| ROI_PATCH | frame u32, alt f32, heading f32, track id u16, crop box 4 x i16, WebP | 22 + image |
 | BG_KEYFRAME | frame u32, alt f32, heading f32, WebP | 12 + image |
 | FULL_FRAME | frame u32, JPEG | 4 + image |
 | RECEIVER_REPORT | GCS time u64 (us), highest seq u32, packets u32, bytes u64, min delay i64 (us) | 32 |
@@ -358,7 +361,7 @@ reads receiver reports from its own socket. Sending and receiving use separate s
 on Windows a send to a closed port makes the next receive on the same socket fail.
 
 ## Ground station (`gcs/`)
-`python -m aegislink.gcs.main [--no-view] [--seconds S] [--warmup S] [--summary] [--snapshot PNG] [--record DIR] [--direct] [--proxy-control PORT] [--motion-model cv|ca] [--track-log PATH]`
+`python -m aegislink.gcs.main [--no-view] [--seconds S] [--warmup S] [--summary] [--snapshot PNG] [--record DIR] [--direct] [--fovea-port P] [--baseline-port P] [--report-port P] [--proxy-control PORT] [--motion-model cv|ca] [--track-log PATH]`
 
 - `GroundStation` (`gcs/receiver.py`) reads both links with `select()` and one `LinkReceiver`
   each. The foveated link's reassembler waits 4 s (a paced keyframe takes about 3 s at 50
@@ -495,7 +498,7 @@ camera really moved. The check compares the two at every new keyframe.
   the older keyframe's GPS position (from before the jump), so the jump stays in the residual
   of the keyframes after it.
 - **Alarm**: 3 suspect keyframes in a row (in the `spoof_drift` and `spoof_jump` scenario runs,
-  1.3-1.8 s after the spoofing started). While it is on, the chain is
+  1.4-2.2 s after the spoofing started). While it is on, the chain is
   never tied to the GPS, and `fallback` is a `FlowPath`: the chain's position at each keyframe
   since the last trusted one, a straight line in between, and after the newest one the last
   flow velocity. 5 keyframes in a row that agree with the GPS again clear it.
@@ -535,8 +538,8 @@ would scale by more than 4 (or less than 1/4) is not drawn.
   side, which lies 8 px (the pad) from the box. The patch's border fades into the background over
   6 px, inside the pad, so the vehicle stays opaque. Patches of the same frame share one camera
   motion, and the fade masks are made once per patch size: with about 40 tracks on the real clip
-  that took the frame time from 17.7 to 14.4 ms at the 95th percentile. Only masks up to 256 x
-  256 pixels are kept (at most 256 of them), so patches in many large sizes cannot pile up
+  that took the frame time from 17.7 to 14.4 ms at the 95th percentile. Only masks of at most
+  65,536 pixels (256 x 256, or for example 600 x 100) are kept, at most 256 of them, so patches in many large sizes cannot pile up
   megabytes of masks.
 - Boxes are drawn green when matched in their frame, amber while coasting, with their ids.
 - **Ghost tracks** are drawn into the view through the view's camera pose (not drawn without
@@ -614,8 +617,9 @@ The ports are the defaults (5600-5605, control 5700) or the same layout from `--
   the UAV (`--send`, with its ground-truth log), plays the events through the control port, and
   waits for both nodes to end by themselves (the UAV flies 3 s longer than the station measures,
   so both logs are complete; it may need much longer on a busy machine, where it makes fewer than
-  30 frames a second, and gets its whole flight time again plus 30 s). The logs and `result.json` (scenario, the station's summary, the
-  track score) go to `logs/scenarios/<name>_<date>_<time>/`. With `--seeds` it runs once per seed,
+  30 frames a second, and gets its whole flight time again plus 30 s). The logs and
+  `result.json` (the scenario, the station's summary, the track score under `tracks` and the GPS
+  check's score under `nav`) go to `logs/scenarios/<name>_<date>_<time>/`. With `--seeds` it runs once per seed,
   each in `seed_<n>/`, and pools the blackout samples of all runs.
 - `evaluate` matches each track to the true vehicle nearest (within 3 m) to its filtered
   position at its last fix, moving the station's ground frame into the map frame by the two
@@ -638,14 +642,13 @@ The ports are the defaults (5600-5605, control 5700) or the same layout from `--
 - **Real clip**: `"video": "data/clip.mp4"` makes the UAV fly over that clip with YOLO
   (`video_clean`, `video_kbps50`). The UAV then starts first, and the headless station (which
   gives up after 15 s without data) and the event clock start when the UAV prints its `clip:`
-  line (measuring a 105 s clip took longer than 15 s). Nothing is scored (a clip has no ground
-  truth, so `tracks` and `nav` are null), and `result.json` holds the UAV's own report under
-  `uav`: frames, frame rate and YOLO's time per frame (median and 95th percentile) with the
-  provider it ran on. `--alt0` must be above 0 m.
-  `--seeds` is refused for a clip. In the live loop YOLO takes 11.6 ms per frame (median; 18.5
+  line (measuring a long clip can take longer than 15 s). Nothing is scored (a clip has no
+  ground truth, so `tracks` and `nav` are null), and `result.json` holds the UAV's own report
+  under `uav`: frames, frame rate and YOLO's time per frame (median and 95th percentile) with
+  the provider it ran on. `--seeds` is refused for a clip. In the live loop YOLO takes 11.6 ms per frame (median; 18.5
   ms at the 95th percentile), more than the 7.6 ms alone, as the encoders, the proxy and the
   station share the CPU.
 - Since a track that the UAV stops listing ends at the station, a blackout's samples come only
-  from tracks that were live when it began: the three `blackout` runs gave 3,949 samples (98.4 %
-  inside: 95.3, 100 and 100 % per run), where dropped tracks kept as ghosts for 10 s had given
+  from tracks that were live when it began: the three `blackout` runs gave 3,663 samples (98.2 %
+  inside: 95.0, 100 and 100 % per run), where dropped tracks kept as ghosts for 10 s had given
   6,153 (94.2 %).

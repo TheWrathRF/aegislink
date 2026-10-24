@@ -75,12 +75,12 @@ proxy) unless noted.
 | Scenario | What was measured | Result |
 |---|---|---|
 | `clean`, 30 s | foveated vs. baseline bitrate; track lists delivered | 124-183 kbps vs. 15,056-15,441 kbps (0.8-1.2 %); 100 % of frames' tracks at 30 Hz |
-| `clean_10min`, seed 1 | the same over 10 minutes; GPS alarms | 208 vs. 14,642 kbps (1.4 %); 0 false alarms over 1,142 background keyframes |
+| `clean_10min`, seed 1 | the same over 10 minutes; GPS alarms | 208 vs. 14,642 kbps (1.4 %); 0 false alarms over 1,144 background keyframes |
 | `kbps50`, 30 s | all links limited to 50 kbps | tracks of 100 % of frames at 30 Hz, 4.1-5.7 patches per second; baseline 0 frames per second |
 | `loss30`, 30 s | 30 % loss in bursts of 4 packets | 69-75 % of frames' tracks arrive (the rest are lost on the link), 12-20 patches per second; baseline 0.1 frames per second |
-| `blackout`, 60 s | three 5 s blackouts: true position inside the drawn 95 % ellipse | 98.4 % of 3,949 blackout samples (95.3, 100 and 100 % per run) |
-| `spoof_drift`, 60 s | two 3 m/s GPS drifts per run | 6 of 6 detected after 1.2-1.8 s; no false alarm; position used during the alarm at most 1.8 m from the truth (mean 0.2 m) |
-| `spoof_jump`, 60 s | two 50 m GPS jumps per run | 6 of 6 detected after 1.2-1.8 s; no false alarm; at most 1.8 m from the truth (mean 0.1-0.3 m) |
+| `blackout`, 60 s | three 5 s blackouts: true position inside the drawn 95 % ellipse | 98.2 % of 3,663 blackout samples (95.0, 100 and 100 % per run) |
+| `spoof_drift`, 60 s | two 3 m/s GPS drifts per run | 6 of 6 detected after 1.4-2.2 s; no false alarm; position used during the alarm at most 1.2 m from the truth (mean 0.1-0.2 m) |
+| `spoof_jump`, 60 s | two 50 m GPS jumps per run | 6 of 6 detected after 1.4-2.0 s; no false alarm; at most 1.2 m from the truth (mean 0.1-0.2 m) |
 | `video_clean`, 25 s | the real clip with YOLO: bitrate, tracks, YOLO on the GPU | 1,853 vs. 25,972 kbps (7.1 %); tracks at 30 Hz, 281 patches per second; YOLO 11.6 ms per frame (median, 18.5 ms at the 95th percentile) in the live loop |
 | `video_kbps50`, 25 s | the real clip at 50 kbps | track lists at 12 Hz (41 % of frames: with about 40 cars in view, one list every frame would need about 107 kbps), no patches; baseline 0 frames per second |
 
@@ -143,14 +143,19 @@ python -m aegislink.tools.run_scenario scenarios/blackout.json --seeds 1 2 3
 
 ### Real video
 
-Needs an NVIDIA GPU. Install onnxruntime-gpu (it brings the CUDA and cuDNN libraries as pip
-packages), export the model once with Ultralytics (only needed for the export), and put a clip
-filmed straight down into `data/`; the one used here is
+Meant for an NVIDIA GPU (without one the detector falls back to the CPU). Install onnxruntime-gpu (it brings the CUDA and cuDNN libraries as pip packages)
+and put a clip filmed straight down into `data/`; the one used here is
 [a roundabout in Tuzla](https://www.pexels.com/video/33269758/), saved at 1920 x 1080 as
 `data/roundabout_tuzla.mp4`:
 
 ```
 python -m pip install -e ".[gpu]"
+```
+
+Export the model once with Ultralytics. It is only needed for the export and pulls in PyTorch,
+so run these two lines in a separate, throwaway virtual environment, not the project's:
+
+```
 python -m pip install ultralytics onnx onnxslim
 python -c "from ultralytics import YOLO; YOLO('yolo26n-obb.pt').export(format='onnx', imgsz=(384, 640), nms=True, agnostic_nms=True)"
 ```
