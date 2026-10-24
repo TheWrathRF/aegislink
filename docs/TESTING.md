@@ -294,7 +294,8 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
 - `tests/test_demo.py`: `run_demo` for 8 s (window offscreen) exits cleanly, draws over 300
   frames, receives the tracks and baseline frames of at least 97 % of the UAV's frames (counted
   by number over the whole run, with 15 per second or more), reports no error, and saves its
-  snapshot; with the UAV's report port taken, the UAV stops and `run_demo` exits with an error.
+  snapshot; with the UAV's report port taken, the UAV stops and `run_demo` exits with an error
+  at once, long before its window's 40 s are up.
   A test that runs out of time kills the whole process tree, the proxy included. About 15 s.
 - `tests/test_stream.py`: the UAV, the proxy and the GCS as three processes, measured by the
   GCS over 8 s after a 5 s warm-up. Clean link: no bad packets or messages, the foveated stream

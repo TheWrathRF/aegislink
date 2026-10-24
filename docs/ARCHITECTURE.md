@@ -624,9 +624,9 @@ Starts `ew_chaos_proxy` with the three links, waits until it answers, then the g
 window and the UAV (`--send`, real time). With `--video` the UAV comes first: it measures the
 clip's camera path (about 7 s), and the window, with its `--seconds` and `--record`, opens only
 when the UAV prints that it is ready, so it never starts on an empty view. When the window
-closes it stops the UAV and the proxy. It exits with the window's exit code, or 1 when the UAV
-stopped early with an error (for example a port already taken), which would otherwise leave
-only an empty window.
+closes it stops the UAV and the proxy. It watches the UAV while the window is open: a UAV that
+stops with an error (for example on a port already taken) ends the run at once with exit code
+1, instead of leaving only an empty window. Otherwise it exits with the window's exit code.
 The ports are the defaults (5600-5605, control 5700) or the same layout from `--base-port`.
 
 ## Scenarios (`tools/run_scenario.py`, `tools/evaluate.py`, `scenarios/`)

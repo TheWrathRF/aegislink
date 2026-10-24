@@ -1,7 +1,7 @@
 """Runs the whole demo: the chaos proxy, the ground station window and the UAV.
 
-All three stop when the window is closed. The exit code is the window's, or 1 if the UAV
-stopped early with an error.
+All three stop when the window is closed, or as soon as the UAV stops with an error. The exit
+code is the window's, or 1 if the UAV stopped early with an error.
 
     python -m aegislink.tools.run_demo
     python -m aegislink.tools.run_demo --seconds 30 --snapshot logs/demo.png
@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import sysconfig
+import time
 from pathlib import Path
 
 from aegislink.common import config
@@ -109,8 +110,12 @@ def main():
             else:
                 sys.exit(f"the UAV stopped before the clip was ready (exit code {uav.wait()})")
             gcs = start_gcs()
-        gcs.wait()
-        return_code = gcs.returncode
+        # The UAV is watched while the window is open: one that fails (a port already taken)
+        # ends the run at once. Checking only after the window closed missed a UAV that was
+        # still building its world when a short --seconds ran out.
+        while gcs.poll() is None and (uav.poll() is None or uav.returncode == 0):
+            time.sleep(0.2)
+        return_code = gcs.returncode or 0
         # Without the UAV the window only showed an empty view: that run failed.
         if uav.poll() is not None and uav.returncode != 0:
             print(f"the UAV stopped early (exit code {uav.returncode})", file=sys.stderr)

@@ -6,6 +6,7 @@ import signal
 import socket
 import subprocess
 import sys
+import time
 
 import pytest
 
@@ -59,13 +60,17 @@ def test_run_demo_starts_everything_and_stops_with_the_window(tmp_path):
 
 def test_run_demo_fails_when_the_uav_cannot_start(tmp_path):
     base = free_port_block()
-    # The UAV receives the reports on base + 5; with that port taken it stops at once.
+    # The UAV receives the reports on base + 5; with that port taken it stops once its world is
+    # built. A slow machine takes seconds for that, so the window gets far longer than it needs:
+    # the run must end when the UAV fails, not when the window would have closed.
     taken = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     taken.bind(("127.0.0.1", base + 5))
+    started = time.monotonic()
     try:
-        code, out, err = run_demo("--seconds", "3", "--log", str(tmp_path / "gt.jsonl"),
+        code, out, err = run_demo("--seconds", "40", "--log", str(tmp_path / "gt.jsonl"),
                                   "--base-port", str(base))
     finally:
         taken.close()
     assert code != 0
     assert "UAV" in err
+    assert time.monotonic() - started < 30
