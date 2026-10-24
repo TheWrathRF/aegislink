@@ -177,6 +177,7 @@ class GroundStation:
         self.spoof = SpoofDetector()    # checks the GPS against the keyframes' optical flow
         self.patches = {}               # track id -> newest Patch
         self.full_frame = None          # newest FullFrameMsg (decoded only when shown)
+        self.full_frame_s = None        # when it arrived
         self.bad_messages = 0           # complete messages that did not decode
         self.first_fovea_s = None
         self.last_fovea_s = None
@@ -338,6 +339,7 @@ class GroundStation:
                                now_s):
                 return OLD
             self.full_frame = body
+            self.full_frame_s = now_s
         return USED
 
     def _measure(self, frame, tracks):
@@ -426,6 +428,7 @@ class GroundStation:
             "baseline_fps": rate[MsgType.FULL_FRAME],
             "keyframe_age_s": keyframe_age,
             "fovea_silent_s": None if self.last_fovea_s is None else now_s - self.last_fovea_s,
+            "baseline_silent_s": None if self.full_frame_s is None else now_s - self.full_frame_s,
             "bad_packets": self.links["fovea"].bad + self.links["baseline"].bad,
             "bad_messages": self.bad_messages,
             "expired": self.links["fovea"].reassembler.stats.expired,

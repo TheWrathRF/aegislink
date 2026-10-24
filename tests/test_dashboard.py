@@ -15,12 +15,13 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("PyQt6.QtWidgets")
 pytest.importorskip("pyqtgraph")
 
+from PyQt6.QtCore import QRect  # noqa: E402
 from PyQt6.QtWidgets import QApplication  # noqa: E402
 
 from aegislink._core import MsgType, Packetizer  # noqa: E402
 from aegislink.common import config, geo, messages  # noqa: E402
 from aegislink.common.proxy_control import ProxyControl  # noqa: E402
-from aegislink.gcs.dashboard import Dashboard, FrameClock, dark_palette  # noqa: E402
+from aegislink.gcs.dashboard import Dashboard, FrameClock, dark_palette, window_size  # noqa: E402
 from aegislink.gcs.ew_deck import RATE_STEPS_KBPS, EwDeck, ProxyLink  # noqa: E402
 from aegislink.gcs.receiver import GroundStation, Measurement, ReceiverThread  # noqa: E402
 from test_proxy import find_proxy, free_ports  # noqa: E402
@@ -87,10 +88,11 @@ def test_frame_clock_reports_rates_and_percentiles():
 def test_window_draws_both_views_within_a_frame_time(app, station):
     fill(station)
     window = Dashboard(ReceiverThread(station))
+    window.resize(1600, 960)        # the offscreen screen is only 800 x 800
     window.show()
-    for _ in range(120):
-        window.draw_frame()
-        app.processEvents()
+    window.draw_frame()
+    # Checked on the first frame: on a slow machine the 120 frames take over a second, and the
+    # baseline is then rightly shown as frozen.
     fovea = window.fovea_view
     w, h = fovea.render_size()
     assert (fovea.image.width(), fovea.image.height()) == (w, h) and w >= 640
@@ -101,9 +103,16 @@ def test_window_draws_both_views_within_a_frame_time(app, station):
     assert tuple(pixels[5, 5]) == pytest.approx((90, 90, 90), abs=3)
     baseline = window.baseline_view._pixels
     assert tuple(baseline[h // 2, w // 2]) == pytest.approx((200, 50, 50), abs=4)
+    for _ in range(118):
+        window.draw_frame()
+        app.processEvents()
+    # The numbers are rates over the last second: a new frame arrives just before they are read.
+    fill(station, frame=41)
+    window.draw_frame()
     window.update_status()      # numbers and the first plot
     window.update_status()      # the second plot and the status line
-    assert "of baseline" in window.fovea_hud.text() and "frames/s" in window.baseline_hud.text()
+    assert "of the baseline's" in window.fovea_hud.text()
+    assert "frames/s" in window.baseline_hud.text()
     assert "frame time p95" in window.status.text()
     s = window.clock.summary()
     assert s["frames"] == 120 and s["work_p95_ms"] < 1000 / 60
@@ -153,14 +162,14 @@ def test_a_ghost_is_drawn_and_counted_while_the_link_is_silent(app, station):
     assert ghost.sum() > 100        # its box, ellipse and label
     window.update_status()
     text = window.fovea_hud.text()
-    assert "ghosts 1" in text and "TSLF up to 1." in text and "m2" in text
+    assert "ghosts 1" in text and "up to 1." in text and "without a fix" in text and "m2" in text
     window.close()
 
 
 def test_a_silent_link_is_shown_as_lost(app, station):
     window = Dashboard(ReceiverThread(station))
     window.draw_frame()
-    assert window.fovea_view.banner == ""
+    assert window.fovea_view.banner == "WAITING FOR THE UAV"
     fill(station)
     window.draw_frame()
     assert window.fovea_view.banner == ""
@@ -397,6 +406,204 @@ def test_an_error_while_drawing_is_shown_not_fatal(app, station, monkeypatch):
     window.update_status()
     assert "broken view" in window.status.text()
     window.close()
+
+
+def test_before_anything_arrives_the_window_says_it_is_waiting(app, station):
+    window = Dashboard(ReceiverThread(station))
+    window.draw_frame()
+    window.update_status()
+    window.update_status()
+    assert window.fovea_view.banner == "WAITING FOR THE UAV"
+    assert window.baseline_view.banner == "WAITING FOR THE UAV"
+    assert "GPS: no data" in window.fovea_hud.text()
+    window.update_status()      # the plots' floor of 0.1 kbps is in the history now
+    window.update_status()
+    assert "(baseline silent)" in window.fovea_hud.text()
+    # The plots keep fixed axes instead of auto-ranging on nothing.
+    assert window.kbps_plot.getViewBox().viewRange()[1] == pytest.approx([-1, 5])
+    assert window.rate_plot.getViewBox().viewRange()[1] == pytest.approx([0, 40])
+    fill(station)
+    window.draw_frame()
+    assert window.fovea_view.banner == "" and window.baseline_view.banner == ""
+    window.close()
+
+
+def test_a_frozen_baseline_is_marked_and_dimmed(app, station):
+    window = Dashboard(ReceiverThread(station))
+    fill(station)
+    window.draw_frame()
+    live = window.baseline_view._pixels[100, 100].astype(int)
+    assert window.baseline_view.banner == ""
+    # Foveated messages keep coming, the last baseline frame is 2 s old.
+    deliver(station, MsgType.FULL_FRAME, messages.encode_full_frame(messages.FullFrameMsg(
+        41, cv2.imencode(".jpg", np.full((H, W, 3), (200, 50, 50), np.uint8))[1].tobytes())),
+        now_s=time.monotonic() - 2, link="baseline")
+    deliver(station, MsgType.TRACKS, messages.encode_tracks(42, []))
+    window.draw_frame()
+    assert window.baseline_view.banner.startswith("FROZEN  2.")
+    assert window.fovea_view.banner == ""
+    frozen = window.baseline_view._pixels[100, 100].astype(int)
+    assert frozen.sum() < 0.6 * live.sum()
+    window.close()
+
+
+def test_the_share_compares_with_the_baselines_peak(app, station):
+    window = Dashboard(ReceiverThread(station))
+    fill(station)
+    window.draw_frame()
+    stats = dict(window.last_stats, fovea_kbps=48.3, baseline_kbps=44.6, baseline_fps=0.0)
+    window.history["baseline_kbps"].extend([14600.0, 14893.0, 900.0])
+    window.last_stats = stats
+    window._first_half = False
+    window.update_status()
+    # The starved baseline trickles fragments that never complete; the foveated stream is
+    # compared with what the baseline needed on the clean link.
+    assert "0.3% of the baseline's 14,893 kbps peak" in window.fovea_hud.text()
+    assert "no whole frame" in window.baseline_hud.text()
+    window.close()
+
+
+def test_a_small_window_gives_the_video_most_of_its_height(app, station):
+    fill(station)
+    window = Dashboard(ReceiverThread(station), ProxyLink(free_ports(1)[0]))
+    window.resize(1280, 720)
+    window.show()
+    for _ in range(3):
+        window.draw_frame()
+        window.update_status()      # the numbers, the plots and the deck's status as well
+        app.processEvents()
+    window.draw_frame()
+    assert window.width() == 1280 and window.height() == 720
+    assert window.fovea_view.render_size()[1] >= 320
+    window.proxy.close()
+    window.close()
+
+
+def test_the_window_opens_within_the_screen():
+    assert window_size(QRect(0, 0, 2560, 1400)) == (1600, 960)
+    assert window_size(QRect(0, 0, 1366, 728)) == (1366, 728)     # a laptop, minus the taskbar
+    assert window_size(None) == (1600, 960)
+
+
+def test_at_200_percent_the_views_fill_their_area(app, station, monkeypatch):
+    fill(station)
+    window = Dashboard(ReceiverThread(station))
+    window.resize(1600, 960)
+    window.show()
+    app.processEvents()
+    view = window.fovea_view
+    # As on a HiDPI screen at 200 %: the render size is capped at 1280 device pixels.
+    monkeypatch.setattr(view, "devicePixelRatioF", lambda: 2.0)
+    window.draw_frame()
+    assert view.render_size()[0] == W
+    picture = view.grab().toImage()
+    background = picture.pixelColor(2, 2)
+    row = picture.height() // 2
+    drawn = [x for x in range(picture.width()) if picture.pixelColor(x, row) != background]
+    fit = min(view.width(), view.height() * 16 / 9)
+    assert max(drawn) - min(drawn) + 1 == pytest.approx(fit, abs=3)
+    window.close()
+
+
+def test_the_view_shows_how_old_its_background_is(app, station):
+    window = Dashboard(ReceiverThread(station))
+    fill(station, now_s=time.monotonic() - 3)
+    window.draw_frame()
+    assert window.fovea_view.note == ""
+    lat, lon = geo.enu_to_latlon(0.0, 0.0, (46.0, 7.0))
+    deliver(station, MsgType.TELEMETRY, messages.encode_telemetry(
+        messages.TelemetryMsg(130, float(lat), float(lon), 150, 10, 0, 0, 0)))
+    window.draw_frame()
+    assert window.fovea_view.note == "background 3.0 s old"
+    window.close()
+
+
+def test_the_hud_and_the_deck_explain_themselves(app, station):
+    fill(station, now_s=time.monotonic() - 1.0)
+    window = Dashboard(ReceiverThread(station), ProxyLink(free_ports(1)[0]))
+    window.draw_frame()
+    window.update_status()
+    text = window.fovea_hud.text()
+    assert "TSLF" not in text and "without a fix" in text
+    for widget in (window.fovea_hud, window.baseline_hud, *window.deck.sliders.values(),
+                   window.deck.blackout_button, window.deck.jump_button,
+                   window.deck.clear_button):
+        assert widget.toolTip()
+    assert window.deck.clear_button.text() == "Clear all"
+    assert window.deck.values["burst"][0].text() == "1 packet"
+    window.proxy.close()
+    window.close()
+
+
+def test_the_rate_plot_range_grows_with_its_lines(app, station):
+    window = Dashboard(ReceiverThread(station))
+    fill(station)
+    window.draw_frame()
+    for tracks_hz in (30.0, 46.0):
+        window.last_stats = dict(window.last_stats, tracks_hz=tracks_hz)
+        window._first_half = False
+        window.update_status()
+        window.update_status()
+        top = window.rate_plot.getViewBox().viewRange()[1][1]
+        assert top >= max(40, 1.1 * tracks_hz) - 0.01
+    window.close()
+
+
+def test_deck_shows_the_link_counters_as_a_table(app):
+    fake = FakeProxy()
+    deck = EwDeck(ProxyLink(fake.port))
+    deck.update_status()
+    fake.answer("ok link=1 loss_pct=0 burst=1 kbps=0 delay_ms=0 jitter_ms=0")
+    stats = "stats uptime_ms=1000\n" + "\n".join(
+        f"link={link} out_kbps={kbps} drop_loss=0 drop_queue={queue} drop_blackout=0 "
+        f"blackout_ms=0" for link, kbps, queue in ((1, 50.2, 7), (2, 13953.5, 8330), (3, 2.0, 0)))
+    fake.sock.sendto(stats.encode(), deck.proxy.sock.getsockname())
+    time.sleep(0.05)
+    deck.update_status()
+    lines = deck.status.text().splitlines()
+    assert len(lines) == 4 and "kbps out" in lines[0] and "queue" in lines[0]
+    assert lines[2].split()[:3] == ["baseline", "13,953.5", "0"]
+    deck.proxy.close()
+    fake.sock.close()
+
+
+def test_a_refused_setting_snaps_back_and_shows_in_red(app):
+    fake = FakeProxy()
+    deck = EwDeck(ProxyLink(fake.port))
+    deck.update_status()
+    fake.answer("ok link=1 loss_pct=0 burst=1 kbps=0 delay_ms=0 jitter_ms=0")
+    time.sleep(0.05)
+    deck.update_status()
+    assert deck.synced
+    deck.sliders["delay_ms"].setValue(250)
+    fake.answer("error: delay must be at most 200 ms")
+    time.sleep(0.05)
+    deck.update_status()
+    assert deck.setting("delay_ms") == 0
+    assert "at most 200 ms" in deck.error.text() and "#ff5050" in deck.error.styleSheet()
+    deck.proxy.close()
+    fake.sock.close()
+
+
+def test_deck_keeps_loss_within_what_the_burst_allows(app, proxy):
+    ports, control = proxy
+    deck = EwDeck(ProxyLink(ports[6]))
+    assert wait_for(lambda: deck.synced, deck, app)
+    # The proxy allows at most L / (L + 1) loss for a mean burst of L packets: 50 % at 1.
+    deck.sliders["loss_pct"].setValue(55)
+    assert deck.setting("loss_pct") == 50
+    assert wait_for(lambda: deck.proxy.settings.get(3, {}).get("loss_pct") == 50, deck, app)
+    deck.sliders["burst"].setValue(4)
+    deck.sliders["loss_pct"].setValue(60)
+    assert wait_for(lambda: deck.proxy.settings.get(3, {}).get("loss_pct") == 60, deck, app)
+    deck.sliders["burst"].setValue(1)       # the loss moves down with it, in the same command
+    assert deck.setting("loss_pct") == 50
+    assert wait_for(lambda: deck.proxy.settings.get(3, {}).get("burst") == 1, deck, app)
+    for link in (1, 2, 3):
+        s = control.configure(link)
+        assert (s["loss_pct"], s["burst"]) == (50, 1)
+    assert not deck.proxy.error
+    deck.proxy.close()
 
 
 def test_frame_clock_memory_is_bounded():

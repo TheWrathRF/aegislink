@@ -529,7 +529,9 @@ would scale by more than 4 (or less than 1/4) is not drawn.
 
 - **Background**: the keyframe (480 x 270 gray) is scaled to the camera's size, moved by the
   camera's motion since it was taken and scaled to the view, in one `warpAffine`. Where the
-  keyframe does not reach, the view is black.
+  keyframe does not reach, the view is dark grey (black before the first keyframe): an old
+  keyframe turned with the camera leaves large wedges, and black there looked like a broken
+  picture.
 - **Track boxes** are moved from their frame to the view's (usually the same frame; the track
   list carries no heading, so only the position change is used).
 - **Patches**: each track's newest patch is turned and scaled by the camera's motion since it was
@@ -548,28 +550,45 @@ would scale by more than 4 (or less than 1/4) is not drawn.
   drawn in magenta with its 95 % ellipse and a label with its id and TSLF (above the ellipse when
   the track has no box). Every track's predicted path for the next 2 s is drawn from 4.5 m out
   (half a truck plus a little), so it never covers the vehicle.
+- Labels and lines are drawn into the image, scaled by the image's pixels per screen pixel
+  (`text_scale`), so they keep their size on the screen when the image is shown scaled.
 
 ### Dashboard (`gcs/dashboard.py`, `gcs/ew_deck.py`)
 - PyQt6 with a dark Fusion palette and pyqtgraph plots. Top: the baseline and the foveated view
-  side by side, each with its numbers below (kbps and frames per second; kbps, share of the
-  baseline, telemetry, track and patch rates, keyframe age, the filtered and ghost tracks, the
-  longest TSLF and the largest ghost ellipse in m^2). Bottom: the EW deck, received kbps
-  (log scale) and messages per second over the last minute, and a status line.
+  side by side, each with its numbers below (kbps and frames per second, or "fragments only"
+  when bytes arrive but no whole frame; kbps and its share of the baseline's highest rate in
+  the last minute, telemetry, track and patch rates, keyframe age, the filtered and ghost
+  tracks, the longest time without a fix and the largest ghost ellipse in m^2). The share uses
+  that peak because a rate limit starves the baseline down to a trickle of fragments, against
+  which the foveated stream would look more expensive than the baseline exactly when it works.
+  The numbers have tooltips that explain them. Bottom: the EW deck, received kbps (log scale)
+  and messages per second over the last minute, and a status line. The plots keep fixed ranges
+  (0.1 to 100,000 kbps, 0 to 40 per second), widened only when a value goes beyond them, so
+  they show something before any data; their titles name the curves in their colours (a legend
+  inside a plot this short sat on the lines).
+- The window opens at 1600 x 960, or at the screen's free area where that is smaller. Each view
+  is at most as tall as 16:9 of its width, and the plots give up height first (their minimum is
+  120 px), so in a 1280 x 720 window the views are about 630 x 350.
 - `ReceiverThread` runs the station in its own thread: it waits for datagrams without the lock,
   then handles them and sends reports under it. The window reads the station only through
   `snapshot()` (a copy of the view's inputs, the newest baseline message and the numbers), so
   drawing never holds up receiving.
 - A 16 ms precise timer draws a frame: snapshot, compose the foveated view at the widget's size
-  (at most 1280 x 720), decode the baseline JPEG once per frame and scale it, and paint both
-  views at once (`repaint`). `FrameClock` records each frame's work time and the interval
+  in device pixels (at most 1280 x 720; a larger view, as on a screen scaled to 200 %, shows it
+  scaled up to fill its area), decode the baseline JPEG once per frame and scale it, and paint
+  both views at once (`repaint`). `FrameClock` records each frame's work time and the interval
   between frame starts; the status line shows their 95th percentiles, and when the window closes
   they are printed as one JSON line with the same measurement as `--summary` (from `--warmup`
   until the window closed) and any error the receiver or the window ran into.
 - Every 125 ms half of the numbers and one of the two plots are refreshed, in turn: a plot takes
   3-5 ms to paint, and both in one frame made the next frame late.
-- No foveated datagram for 0.5 s: the view shows LINK LOST and how long. While the GPS spoofing
-  alarm is on it shows GPS SPOOFED, and the numbers below it the GPS and flow speeds over the
-  last keyframe pair, its `d2` and how many alarms there were.
+- Before anything arrives, both views show WAITING FOR THE UAV and the GPS line says "no data".
+  No foveated datagram for 0.5 s: the view shows LINK LOST and how long. No new baseline frame
+  for 0.5 s: the baseline view is dimmed and shows FROZEN and how long (under a rate limit it
+  would otherwise keep its last picture as if it were live). A background older than 1 s
+  carries its age under the view's title. While the GPS spoofing alarm is on the foveated view
+  shows GPS SPOOFED, and the numbers below it the GPS and flow speeds over the last keyframe
+  pair, its `d2` against the alarm threshold and how many alarms there were.
 - `--record DIR` saves a picture of the whole window every 100 ms as `DIR/00000.jpg`,
   `00001.jpg`, ... (JPEG: a PNG of the window takes a few frames' time). Each picture is a grab
   of the whole window on the drawing thread, so recording costs draw time. A picture that
@@ -579,19 +598,23 @@ would scale by more than 4 (or less than 1/4) is not drawn.
   everything and show it in the status line. Ctrl+C quits the event loop (a SIGINT handler), so
   the receiver stops and the frame times are still printed. The frame times of the last 10
   minutes are kept for that summary.
-- **EW deck**: sliders for packet loss (0-60 %), mean burst length (1-20), rate limit (off, 15 to
-  20,000 kbps in steps), delay (0-300 ms), jitter (0-200 ms), GPS drift (0-10 m/s) and the
-  spoofing bearing (0-359 degrees), a timed blackout, a GPS jump (5-500 m, which sets the
-  offset) and Clear, which also ends the spoofing. Every change goes to all three links: the
-  jammer hits the radio channel both ways, so a blackout also silences the receiver reports
-  and the UAV holds its budget. The status shows the foveated link's spoofing offset.
+- **EW deck**, in two columns (the link on the left, the GPS on the right): sliders for packet
+  loss (0-60 %), mean burst length (1-20), rate limit (off, 15 to 20,000 kbps in steps), delay
+  (0-300 ms), jitter (0-200 ms), GPS drift (0-10 m/s) and the spoofing bearing (0-359 degrees),
+  a timed blackout, a GPS jump (5-500 m, which sets the offset) and Clear all, which also ends
+  the spoofing; each with a tooltip. Every change goes to all three links: the jammer hits the
+  radio channel both ways, so a blackout also silences the receiver reports and the UAV holds
+  its budget. The loss slider ends at what the burst allows (the proxy accepts at most L / (L +
+  1) for a mean burst of L, so 50 % at 1), and a change of the burst sends the loss with it in
+  one command. A command the proxy still refuses moves the sliders back to the proxy's
+  settings and shows the reason in red. Below the sliders, a table of each link's output rate
+  and drops by cause, and the blackout's time left and the foveated link's spoofing offset.
 - `ProxyLink` never waits for the proxy: commands go out on a non-blocking socket, and replies
   and stats are read whenever they have arrived. Datagrams from any other address, and replies
   or stats that do not parse or hold a value that is not finite, are ignored; synced slider
   values are clamped to the slider's range. On the first reply (and the first after a
   silence) the sliders move to the proxy's settings. Without a word for 2 s it asks again, which also takes the stats back from a
-  script that sent a command in between. The deck shows each link's output rate and drops by
-  cause from the proxy's stats.
+  script that sent a command in between.
 
 ## Demo (`tools/run_demo.py`)
 `python -m aegislink.tools.run_demo [--seed N] [--seconds S] [--snapshot PNG] [--record DIR]

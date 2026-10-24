@@ -262,16 +262,26 @@ python -m aegislink.tools.evaluate --truth logs/scenarios/<run>/ground_truth.jso
   repeating a frame keeps the history; extreme altitudes and position jumps neither raise nor
   take over 10 ms (after one normal render, which pays for OpenCV's set-up). A GHOST moves its patch to the predicted position (a LIVE one does not); the
   ghost ellipse has the filter's size, its label sits above it and the path starts 4.5 m out;
-  no ghost is drawn without a view pose. Fade masks are shared for car-sized patches, and 20
+  no ghost is drawn without a view pose; labels and lines grow with the text scale; the area an
+  old keyframe no longer covers is dark grey. Fade masks are shared for car-sized patches, and 20
   large patch sizes add nothing to that cache.
 - `tests/test_dashboard.py` (Qt offscreen; skipped where Qt cannot load): frame-time statistics;
   the window draws both views (patch, background and baseline pixels where expected) in under
-  16.7 ms at the 95th percentile; `record` saves 9-11 numbered pictures of the window in 1 s,
+  16.7 ms at the 95th percentile, and its numbers do not depend on how fast the frames were
+  drawn; `record` saves 9-11 numbered pictures of the window in 1 s,
   the patch visible in them, and a folder that cannot be written stops the recording with a
-  message instead of ending the window; a ghost drawn and counted while the link is silent; LINK
-  LOST after a silence; GPS SPOOFED and the speeds while the alarm is on; the EW deck starts at
+  message instead of ending the window; a ghost drawn and counted while the link is silent;
+  WAITING FOR THE UAV, "GPS: no data" and fixed plot ranges before anything arrives; LINK
+  LOST after a silence; a baseline without a new frame for 2 s dimmed and marked FROZEN; the
+  foveated share against the baseline's peak, and "no whole frame" for a starved baseline; the
+  background's age on the view; in a 1280 x 720 window the views at least 320 px tall, and the
+  opening size within the screen; at 200 % scaling the view filled across its 16:9 area; the
+  rate plot's range growing with its lines; tooltips on the numbers and the deck; GPS SPOOFED and the
+  speeds while the alarm is on; the EW deck starts at
   the proxy's settings and sets loss, burst, rate, jitter, a blackout, a GPS drift, bearing and
-  jump, and Clear on all three links of the real proxy; without a proxy it says so; bad replies (NaN, infinite, huge, missing stats keys)
+  jump, and Clear all on all three links of the real proxy; the loss slider stops at what the
+  burst allows (also when the burst falls), a refused setting moves the slider back and shows
+  the reason in red, and the counters are a table; without a proxy it says so; bad replies (NaN, infinite, huge, missing stats keys)
   and datagrams from another address change nothing; an exception while drawing is shown, not
   fatal; the kept frame times are bounded; Ctrl+C closes the window cleanly (a subprocess that
   raises SIGINT exits 0 and prints its frame times). A live run (UAV process, proxy, this window, about
