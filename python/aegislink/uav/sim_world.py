@@ -120,9 +120,8 @@ class World:
         self._tree_array = np.array([[t.east, t.north, t.radius] for t in self.trees])
         self.vehicles = self._place_vehicles()
 
-    # --- map raster coordinates: column = (east + size/2) / res, row = (size/2 - north) / res
-
     def to_raster(self, points):
+        """Map (east, north) to raster (column, row): ((east + size/2) / res, (size/2 - north) / res)."""
         half = self.config.size_m / 2
         points = np.asarray(points, dtype=float)
         return np.stack([(points[..., 0] + half), (half - points[..., 1])], -1) / self.config.res_m
@@ -131,8 +130,6 @@ class World:
         """2x3 affine matrix taking (east, north) to raster (column, row)."""
         half, res = self.config.size_m / 2, self.config.res_m
         return np.array([[1 / res, 0, half / res], [0, -1 / res, half / res]])
-
-    # --- building the world
 
     def _make_loop(self):
         half = self.config.size_m / 2
@@ -233,8 +230,6 @@ class World:
                     roof_color=roof, next_stop_s=float(self.rng.uniform(5, 40))))
         return vehicles
 
-    # --- motion
-
     def vehicle_pose(self, v):
         """(east, north, heading in degrees) of a vehicle's centre, in its lane."""
         road = self.roads[v.road]
@@ -243,6 +238,10 @@ class World:
         east, north = road.point_at(v.s) + right * self.config.road_width_m / 4
         heading = math.degrees(math.atan2(forward[0], forward[1])) % 360
         return float(east), float(north), heading
+
+    def vehicle_poses(self):
+        """Every vehicle's pose, by vehicle id. Computed once per frame and passed to `render`."""
+        return [self.vehicle_pose(v) for v in self.vehicles]
 
     def _gaps(self):
         """{vehicle id: bumper-to-bumper distance to the next vehicle ahead in its lane}."""
@@ -291,22 +290,20 @@ class World:
             if v.stopping and v.speed == 0:
                 v.stop_left_s = float(self.rng.uniform(2, 6))
 
-    # --- what the camera sees
-
-    def _corners(self, v, length=None, width=None):
-        east, north, heading = self.vehicle_pose(v)
+    @staticmethod
+    def _corners(pose, length, width):
+        east, north, heading = pose
         h = math.radians(heading)
         forward = np.array([math.sin(h), math.cos(h)])
         right = np.array([math.cos(h), -math.sin(h)])
-        half_l = (length or v.length) / 2
-        half_w = (width or v.width) / 2
+        half_l, half_w = length / 2, width / 2
         center = np.array([east, north])
         return np.array([center + a * half_l * forward + b * half_w * right
                          for a, b in ((1, 1), (1, -1), (-1, -1), (-1, 1))])
 
-    def visible_fraction(self, v):
+    def visible_fraction(self, v, pose=None):
         """Share of a vehicle's footprint not under a tree or bridge (from a 5 x 3 sample grid)."""
-        east, north, heading = self.vehicle_pose(v)
+        east, north, heading = pose or self.vehicle_pose(v)
         h = math.radians(heading)
         forward = np.array([math.sin(h), math.cos(h)])
         right = np.array([math.cos(h), -math.sin(h)])
@@ -315,8 +312,11 @@ class World:
         cols, rows = np.round(self.to_raster(points)).astype(int).T
         return float(np.mean(self.cover[rows, cols] == 0))
 
-    def render(self, camera, pose):
-        """Renders the camera image at `pose`; returns (BGR image, list of Truth)."""
+    def render(self, camera, pose, poses=None):
+        """Renders the camera image at `pose`; returns (BGR image, list of Truth). `poses` are the
+        vehicles' poses from `vehicle_poses`, if the caller has them already."""
+        if poses is None:
+            poses = self.vehicle_poses()
         to_raster = np.vstack([self.raster_matrix(), [0, 0, 1]])
         to_ground = np.vstack([camera.pixel_to_ground_matrix(pose), [0, 0, 1]])
         matrix = (to_raster @ to_ground)[:2]
@@ -331,14 +331,14 @@ class World:
 
         truths = []
         for v in self.vehicles:
-            east, north, _ = self.vehicle_pose(v)
-            if math.hypot(east - pose.east, north - pose.north) > view_radius:
+            v_pose = poses[v.id]
+            if math.hypot(v_pose[0] - pose.east, v_pose[1] - pose.north) > view_radius:
                 continue
-            corners = self._corners(v)
+            corners = self._corners(v_pose, v.length, v.width)
             cv2.fillConvexPoly(frame, to_px(corners), v.color, cv2.LINE_AA, 4)
-            roof = self._corners(v, v.length * 0.55, v.width * 0.8)
+            roof = self._corners(v_pose, v.length * 0.55, v.width * 0.8)
             cv2.fillConvexPoly(frame, to_px(roof), v.roof_color, cv2.LINE_AA, 4)
-            truths.append(self._truth(v, camera, pose, corners))
+            truths.append(self._truth(v, v_pose, camera, pose, corners))
 
         if len(self._tree_array):
             near = np.hypot(self._tree_array[:, 0] - pose.east,
@@ -357,7 +357,7 @@ class World:
                          max(1, int(0.6 / mpp)), cv2.LINE_AA, 4)
         return frame, truths
 
-    def _truth(self, v, camera, pose, corners):
+    def _truth(self, v, v_pose, camera, pose, corners):
         pixels = camera.ground_to_pixel(pose, corners)
         x1, y1 = pixels.min(axis=0)
         x2, y2 = pixels.max(axis=0)
@@ -366,4 +366,4 @@ class World:
         area = (x2 - x1) * (y2 - y1)
         in_frame = float(max(0, cx2 - cx1) * max(0, cy2 - cy1) / area)
         box = (float(cx1), float(cy1), float(cx2), float(cy2)) if in_frame > 0 else None
-        return Truth(v.id, box, in_frame, self.visible_fraction(v))
+        return Truth(v.id, box, in_frame, self.visible_fraction(v, v_pose))

@@ -65,15 +65,13 @@ class UavSim:
         """Renders and processes the current frame, then advances the world by one frame."""
         t = self.index / FPS
         pose = self.flight.pose
-        frame, truths = self.world.render(self.camera, pose)
+        poses = self.world.vehicle_poses()
+        frame, truths = self.world.render(self.camera, pose, poses)
         detections = self.detector.detect(truths)
         motion = self.camera.motion_matrix(self.last_pose, pose) if self.last_pose else None
         tracks = self.tracker.update(detections, motion)
-        vehicles = {}
-        for truth in truths:
-            v = self.world.vehicles[truth.id]
-            vehicles[v.id] = (*self.world.vehicle_pose(v), v.speed)
-        traffic = [self.world.vehicle_pose(v)[:2] for v in self.world.vehicles]
+        vehicles = {t.id: (*poses[t.id], self.world.vehicles[t.id].speed) for t in truths}
+        traffic = [p[:2] for p in poses]
         result = FrameResult(self.index, t, frame, pose, self.flight.telemetry(t), truths,
                              vehicles, detections, tracks, traffic)
         self.world.step(1 / FPS)
