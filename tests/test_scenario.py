@@ -161,6 +161,7 @@ def test_pooled_share_weights_runs_by_their_samples():
                                                             "blackout_inside": 0.975}
 
 
+@pytest.mark.slow
 def test_a_short_blackout_scenario_end_to_end(tmp_path):
     """UAV, proxy and a headless ground station: a 3 s blackout on all links turns the tracks
     into ghosts, and the logs are scored against the ground truth."""
@@ -180,6 +181,7 @@ def test_a_short_blackout_scenario_end_to_end(tmp_path):
     assert result["nav"]["spoof_onsets"] == 0 and result["nav"]["false_alarms"] == 0
 
 
+@pytest.mark.slow
 def test_a_short_video_scenario_end_to_end(tmp_path):
     """The UAV over the real clip with YOLO on the GPU (skipped without the GPU, the model or the
     clip): the tracks arrive, then a 50 kbps limit stops the baseline; the UAV's report is kept."""
@@ -204,6 +206,7 @@ def test_a_short_video_scenario_end_to_end(tmp_path):
     assert saved["uav"] == uav
 
 
+@pytest.mark.slow
 def test_a_short_gps_jump_scenario_end_to_end(tmp_path):
     """The proxy moves the telemetry position 50 m east; the station raises the alarm within
     3 s from the keyframes' flow and navigates by the flow until the GPS is right again."""

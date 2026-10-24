@@ -14,6 +14,8 @@ from aegislink.common.messages import TelemetryMsg
 from aegislink.common.proxy_control import ProxyControl, ProxyError
 from aegislink.tools import link_meter, run_demo
 
+pytestmark = pytest.mark.slow
+
 CLEAN = dict(loss_pct=0, burst=1, kbps=0, queue_ms=250, delay_ms=0, jitter_ms=0, blackout_ms=0,
              spoof_drift_mps=0, spoof_bearing_deg=0, spoof_offset_m=0)
 

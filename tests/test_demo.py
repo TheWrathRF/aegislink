@@ -14,6 +14,8 @@ pytest.importorskip("PyQt6.QtWidgets")
 
 from test_proxy import free_port_block  # noqa: E402
 
+pytestmark = pytest.mark.slow
+
 
 def run_demo(*args, timeout=60):
     """Runs run_demo with the window offscreen. On a timeout the whole process tree is killed:

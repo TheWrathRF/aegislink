@@ -9,6 +9,8 @@ import pytest
 from aegislink.common.proxy_control import ProxyControl
 from test_proxy import find_proxy, free_ports
 
+pytestmark = pytest.mark.slow
+
 WARMUP_S = 5
 MEASURE_S = 8
 

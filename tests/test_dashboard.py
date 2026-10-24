@@ -274,6 +274,7 @@ def test_deck_without_a_proxy_says_so(app):
     deck.proxy.close()
 
 
+@pytest.mark.slow
 def test_rate_slider_starves_the_baseline_while_tracks_keep_coming(app, proxy, tmp_path):
     """The whole chain: UAV process -> proxy -> this window, with the deck cutting the rate."""
     ports, control = proxy

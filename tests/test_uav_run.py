@@ -105,6 +105,7 @@ def test_same_seed_same_run():
     assert [t.box.tolist() for t in ra.tracks] == [t.box.tolist() for t in rb.tracks]
 
 
+@pytest.mark.slow
 def test_a_paced_run_reports_its_own_time(tmp_path):
     """The run's seconds and sent kbps leave out building the world (over a second)."""
     import re

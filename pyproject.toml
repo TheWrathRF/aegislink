@@ -25,3 +25,4 @@ minimum-version = "build-system.requires"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: runs the real processes for several seconds (deselect with -m \"not slow\")"]
